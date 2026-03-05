@@ -55,7 +55,7 @@ class AuthPageController extends Controller
 
         $remember = $request->boolean('remember');
 
-       if (Auth::attempt(['email' => $credentials['email'], 'password' => $credentials['password']], $remember)) {
+        if (Auth::attempt(['email' => $credentials['email'], 'password' => $credentials['password']], $remember)) {
         /** @var User $user */
         $user = Auth::user();
 
@@ -81,6 +81,11 @@ class AuthPageController extends Controller
             }
 
             $request->session()->regenerate();
+
+            // Redirect based on role
+            if ($user->is_admin) {
+                return redirect()->route('admin.dashboard');
+            }
 
             return redirect()->intended('dashboard');
         }

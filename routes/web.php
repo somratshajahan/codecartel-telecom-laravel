@@ -2,14 +2,29 @@
 
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Http\Request;
 use App\Http\Controllers\HomepageController;
 use App\Http\Controllers\AuthPageController;
 use App\Http\Controllers\AdminAuthController;
-
+use App\Http\Controllers\ComplaintController;
+use App\Http\Controllers\AdminController;
 Route::get('/', [HomepageController::class, 'index'])->name('homepage');
 
 // Admin routes
-use App\Http\Controllers\AdminController;
+
+
+Route::get('/complaints', [ComplaintController::class, 'index'])->name('complaints.index');
+Route::post('/complaints/store', [ComplaintController::class, 'store'])->name('complaints.store');
+
+// Admin Complaint Routes
+Route::get('/admin/complaints', [ComplaintController::class, 'adminIndex'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.complaints');
+Route::post('/admin/complaints/{id}/reply', [ComplaintController::class, 'adminReply'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.complaints.reply');
+
 Route::get('/admin', [AdminController::class, 'dashboard'])
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.dashboard');
@@ -209,10 +224,28 @@ Route::post('/admin/regular-requests/{id}/confirm-cancel', [AdminController::cla
 Route::get('/admin/drive-history', [AdminController::class, 'driveHistory'])
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.drive.history');
+    Route::post('/admin/manage-drive-package/{operator}/store', [AdminController::class, 'storeDrivePackage'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.manage.drive.package.store');
 
 Route::get('/admin/all-history', [AdminController::class, 'allHistory'])
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.all.history');
+
+Route::get('/admin/internet-history', [AdminController::class, 'internetHistory'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.internet.history');
+
+Route::delete('/admin/all-history/delete-all', [AdminController::class, 'deleteAllHistory'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.all.history.delete');
+
+Route::get('/admin/operator/create', [\App\Http\Controllers\AdminController::class, 'createOperator'])->name('admin.operator.create');
+
+Route::post('/admin/operator/store', [AdminController::class, 'storeOperator'])->name('admin.operator.store');
+
+Route::post('/admin/regular-offer/store', [AdminController::class, 'storeRegularOffer'])->name('admin.regular.offer.store');
+Route::post('/admin/drive-offer/store', [AdminController::class, 'storeDriveOffer'])->name('admin.drive.offer.store');
 
 Route::get('/admin/homepage', [HomepageController::class, 'edit'])
     ->middleware(['auth', 'admin', 'prevent.back'])
@@ -396,6 +429,102 @@ Route::get('/profile', function () {
     return view('user-profile', compact('settings', 'user'));
 })->middleware(['auth', 'prevent.back'])->name('user.profile');
 
+Route::put('/profile', function (Request $request) {
+    $user = Auth::user();
+    
+    $validated = $request->validate([
+        'name' => ['required', 'string', 'max:255'],
+        'mobile' => ['nullable', 'regex:/^01[0-9]{9}$/'],
+        'nid' => ['nullable', 'string', 'max:20'],
+    ]);
+
+    $user->name = $validated['name'];
+    $user->mobile = $validated['mobile'] ?? $user->mobile;
+    $user->nid = $validated['nid'] ?? $user->nid;
+    $user->save();
+
+    return redirect()->route('user.profile')->with('success', 'Profile updated successfully!');
+})->middleware(['auth', 'prevent.back'])->name('user.profile.update');
+
+Route::put('/profile/password', function (Request $request) {
+    $user = Auth::user();
+    
+    $validated = $request->validate([
+        'current_password' => ['required'],
+        'new_password' => ['required', 'min:6', 'confirmed'],
+    ]);
+
+    if (!Hash::check($validated['current_password'], $user->password)) {
+        return back()->withErrors(['current_password' => 'Current password is incorrect.']);
+    }
+
+    $user->password = Hash::make($validated['new_password']);
+    $user->save();
+
+    return redirect()->route('user.profile')->with('success', 'Password updated successfully!');
+})->middleware(['auth', 'prevent.back'])->name('user.profile.password');
+
+Route::put('/profile/pin', function (Request $request) {
+    $user = Auth::user();
+    
+    $validated = $request->validate([
+        'current_pin' => ['required', 'digits:4'],
+        'new_pin' => ['required', 'digits:4', 'confirmed'],
+    ]);
+
+    if (!Hash::check($validated['current_pin'], $user->pin)) {
+        return back()->withErrors(['current_pin' => 'Current PIN is incorrect.']);
+    }
+
+    $user->pin = Hash::make($validated['new_pin']);
+    $user->save();
+
+    return redirect()->route('user.profile')->with('success', 'PIN updated successfully!');
+})->middleware(['auth', 'prevent.back'])->name('user.profile.pin');
+
+Route::put('/profile/picture', function (Request $request) {
+    $user = Auth::user();
+    
+    $validated = $request->validate([
+        'profile_picture' => ['required', 'image', 'mimes:jpeg,png,jpg,gif', 'max:2048'],
+    ]);
+
+    if ($request->hasFile('profile_picture')) {
+        $file = $validated['profile_picture'];
+        $filename = 'profile_' . $user->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+        
+        // Store in public/uploads/profilePictures folder
+        $uploadPath = public_path('uploads/profilePictures');
+        if (!file_exists($uploadPath)) {
+            mkdir($uploadPath, 0755, true);
+        }
+        $file->move($uploadPath, $filename);
+        
+        // Delete old picture if exists
+        if ($user->profile_picture && file_exists(public_path($user->profile_picture))) {
+            unlink(public_path($user->profile_picture));
+        }
+        
+        $user->profile_picture = 'uploads/profilePictures/' . $filename;
+        $user->save();
+    }
+
+    return redirect()->route('user.profile')->with('success', 'Profile picture updated successfully!');
+})->middleware(['auth', 'prevent.back'])->name('user.profile.picture');
+
+Route::delete('/profile/picture', function () {
+    $user = Auth::user();
+    
+    if ($user->profile_picture && file_exists(public_path($user->profile_picture))) {
+        unlink(public_path($user->profile_picture));
+    }
+    
+    $user->profile_picture = null;
+    $user->save();
+
+    return redirect()->route('user.profile')->with('success', 'Profile picture removed successfully!');
+})->middleware(['auth', 'prevent.back'])->name('user.profile.picture.delete');
+
 Route::post('/drive-offers/{operator}/buy/{package}', function ($operator, $package) {
     $packageData = \App\Models\DrivePackage::findOrFail($package);
     $mobile = request('mobile');
@@ -455,6 +584,47 @@ Route::get('/my-drive-history', function () {
 
     return view('user-drive-history', compact('settings', 'history'));
 })->middleware(['auth', 'prevent.back'])->name('user.drive.history');
+
+Route::get('/my-history', function () {
+    $settings = \App\Models\HomepageSetting::first();
+    $user = auth()->user();
+    
+    $driveHistory = \DB::table('drive_history')
+        ->where('user_id', auth()->id())
+        ->orderBy('created_at', 'desc')
+        ->get()
+        ->map(function ($item) {
+            $item->type = 'drive';
+            $item->operator = $item->operator ?? 'Drive';
+            $item->mobile = $item->mobile ?? '-';
+            $item->status = $item->status ?? 'success';
+            $item->description = $item->description ?? 'Drive Recharge';
+            return $item;
+        });
+
+    $internetHistory = \App\Models\RegularRequest::where('user_id', auth()->id())
+        ->whereIn('status', ['approved', 'rejected'])
+        ->orderBy('created_at', 'desc')
+        ->get()
+        ->map(function ($item) {
+            return (object) [
+                'type' => 'internet',
+                'operator' => $item->operator ?? 'Internet Pack',
+                'mobile' => $item->mobile ?? '-',
+                'amount' => $item->amount,
+                'status' => $item->status === 'approved' ? 'success' : 'failed',
+                'description' => $item->status === 'approved' ? 'Internet Pack Recharge' : 'Internet Pack Request Failed',
+                'created_at' => $item->created_at,
+            ];
+        });
+
+    $history = $driveHistory
+        ->concat($internetHistory)
+        ->sortByDesc('created_at')
+        ->values();
+
+    return view('user-all-history', compact('settings', 'history'));
+})->middleware(['auth', 'prevent.back'])->name('user.all.history');
 
 Route::get('/my-pending-requests', function () {
     $settings = \App\Models\HomepageSetting::first();

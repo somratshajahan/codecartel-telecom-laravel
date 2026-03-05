@@ -42,6 +42,9 @@
 
             <!-- Main Content -->
             <div class="p-6">
+                @hasSection('content')
+                    @yield('content')
+                @else
                 @if(isset($driveData))
                     <div class="p-6">
                         <h1 class="text-3xl font-bold mb-6">Drive Offer Management</h1>
@@ -132,52 +135,7 @@
                             </div>
                         </div>
                     </div>
-                @elseif(isset($allHistory))
-                    <div class="p-6">
-                        <h1 class="text-3xl font-bold mb-6">All Recharge History</h1>
-                        <div class="card bg-base-100 shadow-xl">
-                            <div class="card-body">
-                                <div class="overflow-x-auto">
-                                    <table class="table table-zebra">
-                                        <thead>
-                                            <tr>
-                                                <th>ID</th>
-                                                <th>User</th>
-                                                <th>Operator</th>
-                                                <th>Mobile</th>
-                                                <th>Amount</th>
-                                                <th>Status</th>
-                                                <th>Description</th>
-                                                <th>Date</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            @forelse($allHistory as $item)
-                                                <tr>
-                                                    <td>{{ $item->id }}</td>
-                                                    <td>{{ $item->user->name ?? 'N/A' }}</td>
-                                                    <td><span class="badge badge-primary">{{ $item->operator }}</span></td>
-                                                    <td>{{ $item->mobile }}</td>
-                                                    <td>৳{{ number_format($item->amount, 2) }}</td>
-                                                    <td>
-                                                        <span class="badge {{ $item->status == 'success' ? 'badge-success' : 'badge-error' }}">
-                                                            {{ ucfirst($item->status) }}
-                                                        </span>
-                                                    </td>
-                                                    <td>{{ $item->description ?? '-' }}</td>
-                                                    <td>{{ \Carbon\Carbon::parse($item->created_at)->format('d M Y H:i') }}</td>
-                                                </tr>
-                                            @empty
-                                                <tr>
-                                                    <td colspan="8" class="text-center">No history found</td>
-                                                </tr>
-                                            @endforelse
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                  
                 @elseif(isset($history))
                     <div class="p-6">
                         <h1 class="text-3xl font-bold mb-6">Drive History</h1>
@@ -218,6 +176,195 @@
                                                     <td colspan="8" class="text-center">No history found</td>
                                                 </tr>
                                             @endforelse
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                @elseif(isset($allHistory))
+                    <div class="p-6">
+                        <div class="flex justify-between items-center mb-6">
+                            <h1 class="text-3xl font-bold">All History</h1>
+                        </div>
+                        
+                        <!-- Filter Section -->
+                        <div class="card bg-base-100 shadow-md mb-6 p-4">
+                            <form method="GET" action="{{ route('admin.all.history') }}">
+                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Show</span></label>
+                                        <select name="show" class="select select-bordered select-sm">
+                                            <option value="50" {{ ($show ?? 50) == 50 ? 'selected' : '' }}>50</option>
+                                            <option value="25" {{ ($show ?? 50) == 25 ? 'selected' : '' }}>25</option>
+                                            <option value="100" {{ ($show ?? 50) == 100 ? 'selected' : '' }}>100</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Number</span></label>
+                                        <input type="text" name="number" value="{{ $number ?? '' }}" placeholder="Search number..." class="input input-bordered input-sm" />
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Reseller</span></label>
+                                        <input type="text" name="reseller" value="{{ $reseller ?? '' }}" placeholder="Search reseller..." class="input input-bordered input-sm" />
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Services</span></label>
+                                        <select name="service" class="select select-bordered select-sm">
+                                            <option value="">--Any--</option>
+                                            <option value="drive" {{ ($service ?? '') == 'drive' ? 'selected' : '' }}>Drive</option>
+                                            <option value="bkash" {{ ($service ?? '') == 'bkash' ? 'selected' : '' }}>Bkash</option>
+                                            <option value="internet" {{ ($service ?? '') == 'internet' ? 'selected' : '' }}>Internet</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Status</span></label>
+                                        <select name="status" class="select select-bordered select-sm">
+                                            <option value="">--Any--</option>
+                                            <option value="success" {{ ($status ?? '') == 'success' ? 'selected' : '' }}>Success</option>
+                                            <option value="failed" {{ ($status ?? '') == 'failed' ? 'selected' : '' }}>Failed</option>
+                                            <option value="pending" {{ ($status ?? '') == 'pending' ? 'selected' : '' }}>Pending</option>
+                                            <option value="cancelled" {{ ($status ?? '') == 'cancelled' ? 'selected' : '' }}>Cancelled</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Date From</span></label>
+                                        <input type="date" name="date_from" value="{{ $dateFrom ?? '' }}" class="input input-bordered input-sm" />
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">Date To</span></label>
+                                        <input type="date" name="date_to" value="{{ $dateTo ?? '' }}" class="input input-bordered input-sm" />
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label"><span class="label-text">&nbsp;</span></label>
+                                        <button type="submit" class="btn btn-primary btn-sm bg-blue-500 hover:bg-blue-600 border-0 text-white">Filter</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                        
+                        <div class="card bg-base-100 shadow-xl">
+                            <div class="card-body p-0">
+                                <div class="overflow-x-auto">
+                                    <table class="table table-zebra w-full">
+                                        <thead>
+                                            <tr>
+                                                <th>Sl</th>
+                                                <th>User</th>
+                                                <th>Service</th>
+                                                <th>Operator</th>
+                                                <th>Mobile</th>
+                                                <th>Amount</th>
+                                                <th>Cost</th>
+                                                <th>Status</th>
+                                                <th>Balance</th>
+                                                <th>Description</th>
+                                                <th>Date</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @forelse($allHistory as $index => $item)
+                                                <tr>
+                                                    <td>{{ $index + 1 }}</td>
+                                                    <td>{{ $item->user->name ?? 'N/A' }}</td>
+                                                    <td>
+                                                        @if($item->service === 'drive')
+                                                            <span class="badge badge-info">Drive</span>
+                                                        @elseif($item->service === 'bkash')
+                                                            <span class="badge badge-warning">Bkash</span>
+                                                        @else
+                                                            <span class="badge badge-primary">Internet</span>
+                                                        @endif
+                                                    </td>
+                                                    <td><span class="badge badge-primary">{{ $item->operator }}</span></td>
+                                                    <td>{{ $item->mobile ?? '-' }}</td>
+                                                    <td>৳{{ number_format($item->amount, 2) }}</td>
+                                                    <td>৳{{ number_format($item->cost ?? 0, 2) }}</td>
+                                                    <td>
+                                                        <span class="badge {{ $item->status == 'success' ? 'badge-success' : ($item->status == 'failed' ? 'badge-error' : 'badge-warning') }}">
+                                                            {{ ucfirst($item->status) }}
+                                                        </span>
+                                                    </td>
+                                                    <td>৳{{ number_format($item->balance ?? 0, 2) }}</td>
+                                                    <td>{{ $item->description ?? '-' }}</td>
+                                                    <td>{{ \Carbon\Carbon::parse($item->created_at)->format('d M Y H:i') }}</td>
+                                                </tr>
+                                            @empty
+                                                <tr>
+                                                    <td colspan="9" class="text-center">No history found</td>
+                                                </tr>
+                                            @endforelse
+                                            @if($allHistory->count() > 0)
+                                                <tr class="font-bold bg-base-200">
+                                                    <td colspan="5" class="text-right">Total:</td>
+                                                    <td><span class="badge badge-success badge-lg">৳{{ number_format($totalAmount ?? 0, 2) }}</span></td>
+                                                    <td><span class="badge badge-info badge-lg">৳{{ number_format($totalCost ?? 0, 2) }}</span></td>
+                                                    <td colspan="3"></td>
+                                                </tr>
+                                            @endif
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                @elseif(isset($internetHistory))
+                    <div class="p-6">
+                        <div class="flex justify-between items-center mb-6">
+                            <h1 class="text-3xl font-bold">Internet Pack History</h1>
+                            <form method="GET" action="{{ route('admin.internet.history') }}" class="flex gap-2">
+                                <select name="date" class="select select-bordered select-sm" onchange="this.form.submit()">
+                                    <option value="today" {{ ($dateFilter ?? 'today') == 'today' ? 'selected' : '' }}>Today</option>
+                                    <option value="yesterday" {{ ($dateFilter ?? 'today') == 'yesterday' ? 'selected' : '' }}>Yesterday</option>
+                                    <option value="week" {{ ($dateFilter ?? 'today') == 'week' ? 'selected' : '' }}>This Week</option>
+                                    <option value="month" {{ ($dateFilter ?? 'today') == 'month' ? 'selected' : '' }}>This Month</option>
+                                </select>
+                            </form>
+                        </div>
+                        <div class="card bg-base-100 shadow-xl">
+                            <div class="card-body p-0">
+                                <div class="overflow-x-auto">
+                                    <table class="table table-zebra w-full">
+                                        <thead>
+                                            <tr>
+                                                <th>Sl</th>
+                                                <th>User</th>
+                                                <th>Operator</th>
+                                                <th>Mobile</th>
+                                                <th>Amount</th>
+                                                <th>Status</th>
+                                                <th>Description</th>
+                                                <th>Date</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @forelse($internetHistory as $index => $item)
+                                                <tr>
+                                                    <td>{{ $index + 1 }}</td>
+                                                    <td>{{ $item->user->name ?? 'N/A' }}</td>
+                                                    <td><span class="badge badge-primary">{{ $item->operator }}</span></td>
+                                                    <td>{{ $item->mobile ?? '-' }}</td>
+                                                    <td>৳{{ number_format($item->amount, 2) }}</td>
+                                                    <td>
+                                                        <span class="badge {{ $item->status == 'success' ? 'badge-success' : ($item->status == 'failed' ? 'badge-error' : 'badge-warning') }}">
+                                                            {{ ucfirst($item->status) }}
+                                                        </span>
+                                                    </td>
+                                                    <td>{{ $item->description ?? '-' }}</td>
+                                                    <td>{{ \Carbon\Carbon::parse($item->created_at)->format('d M Y H:i') }}</td>
+                                                </tr>
+                                            @empty
+                                                <tr>
+                                                    <td colspan="8" class="text-center">No internet pack history found</td>
+                                                </tr>
+                                            @endforelse
+                                            @if($internetHistory->count() > 0)
+                                                <tr class="font-bold bg-base-200">
+                                                    <td colspan="4" class="text-right">Total:</td>
+                                                    <td><span class="badge badge-success badge-lg">৳{{ number_format($totalAmount ?? 0, 2) }}</span></td>
+                                                    <td colspan="3"></td>
+                                                </tr>
+                                            @endif
                                         </tbody>
                                     </table>
                                 </div>
@@ -470,6 +617,7 @@
                         </div>
                     </div>
                 @endif
+                @endif
             </div>
         </div>
         
@@ -533,7 +681,7 @@
                                 <li><a href="{{ route('admin.all.history') }}">All History</a></li>
                                 <li><a>Flexiload</a></li>
                                 <li><a href="{{ route('admin.drive.history') }}">Drive</a></li>
-                                <li><a>Internet Pack</a></li>
+                                <li><a href="{{ route('admin.internet.history') }}">Internet Pack</a></li>
                                 <li><a>Bkash</a></li>
                                 <li><a>Nagad</a></li>
                                 <li><a>Rocket</a></li>
@@ -571,6 +719,10 @@
                                 Offer Settings
                             </summary>
                             <ul>
+                                <li>
+   <a href="{{ route('admin.operator.create') }}" class="flex items-center gap-2">
+    <span>Add Operator</span>
+</a></li>
                                 <li><a href="{{ route('admin.regular.offer') }}">Regular Package</a></li>
                                 <li><a href="{{ route('admin.drive.offer') }}">Drive Package</a></li>
                             </ul>
@@ -744,7 +896,7 @@
                         </details>
                     </li>
                     <li>
-                        <a>
+                        <a href="{{ route('admin.complaints') }}">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>

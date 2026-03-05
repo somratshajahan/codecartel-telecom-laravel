@@ -227,19 +227,7 @@
                     <h1 class="text-3xl font-bold">Drive Offer Management</h1>
                 </div>
 
-                <!-- Search -->
-                <div class="card bg-base-100 shadow-xl mb-6">
-                    <div class="card-body">
-                        <h3 class="text-lg font-bold mb-4">Search</h3>
-                        <form method="GET" action="{{ route('admin.drive.offer') }}">
-                            <div class="flex gap-2">
-                                <input type="text" name="search" value="{{ request('search') }}" placeholder="Search operator..." class="input input-bordered flex-1" />
-                                <button type="submit" class="btn btn-primary">Search</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
+             
                 <!-- Table -->
                 <div class="card bg-base-100 shadow-xl">
                     <div class="card-body">

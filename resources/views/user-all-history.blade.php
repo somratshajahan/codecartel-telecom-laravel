@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drive History - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
+    <title>My History - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
         <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
@@ -14,18 +14,16 @@
 <body class="min-h-screen bg-base-200">
     <div class="p-4">
         <div class="flex justify-between items-center mb-6">
-            <h1 class="text-3xl font-bold">Drive History</h1>
-            <a href="{{ route('admin.dashboard') }}" class="btn btn-ghost">Back to Dashboard</a>
+            <h1 class="text-3xl font-bold">My History</h1>
+            <a href="{{ route('dashboard') }}" class="btn btn-ghost">Back to Dashboard</a>
         </div>
-        
         <div class="card bg-base-100 shadow-xl">
             <div class="card-body">
                 <div class="overflow-x-auto">
                     <table class="table table-zebra">
                         <thead>
                             <tr>
-                                <th>ID</th>
-                                <th>User</th>
+                                <th>Type</th>
                                 <th>Operator</th>
                                 <th>Mobile</th>
                                 <th>Amount</th>
@@ -37,8 +35,13 @@
                         <tbody>
                             @forelse($history as $item)
                                 <tr>
-                                    <td>{{ $item->id }}</td>
-                                    <td>{{ $item->user->name ?? 'N/A' }}</td>
+                                    <td>
+                                        @if(($item->type ?? 'drive') === 'drive')
+                                            <span class="badge badge-info">Drive</span>
+                                        @else
+                                            <span class="badge badge-primary">Internet</span>
+                                        @endif
+                                    </td>
                                     <td><span class="badge badge-primary">{{ $item->operator }}</span></td>
                                     <td>{{ $item->mobile }}</td>
                                     <td>৳{{ number_format($item->amount, 2) }}</td>
@@ -52,7 +55,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="8" class="text-center">No history found</td>
+                                    <td colspan="7" class="text-center">No history found</td>
                                 </tr>
                             @endforelse
                         </tbody>
@@ -63,3 +66,4 @@
     </div>
 </body>
 </html>
+

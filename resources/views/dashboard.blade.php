@@ -27,7 +27,7 @@
                     </label>
                 </div>
                 <div class="flex-1">
-                    <a href="/" class="px-2 text-xl font-bold">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</a>
+                    <a href="{{ route('dashboard') }}" class="px-2 text-xl font-bold">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</a>
                 </div>
                 <div class="flex-none gap-2">
                     <div class="dropdown dropdown-end">
@@ -46,8 +46,12 @@
                     </div>
                     <div class="dropdown dropdown-end">
                         <div tabindex="0" role="button" class="btn btn-ghost btn-circle avatar">
-                            <div class="w-10 rounded-full bg-primary text-primary-content flex items-center justify-center">
-                                <span class="font-bold">{{ strtoupper(substr($user->name, 0, 1)) }}</span>
+                            <div class="w-10 rounded-full bg-primary text-primary-content flex items-center justify-center overflow-hidden">
+                                @if($user->profile_picture)
+                                    <img src="{{ asset($user->profile_picture) }}" alt="Profile" class="w-full h-full object-cover">
+                                @else
+                                    <span class="font-bold">{{ strtoupper(substr($user->name, 0, 1)) }}</span>
+                                @endif
                             </div>
                         </div>
                         <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
@@ -109,7 +113,17 @@
                 <h1 class="text-3xl font-bold">Welcome, {{ $user->name }}!</h1>
                 <p class="text-base-content/60 mb-8">Here's a quick overview of your account.</p>
 
-                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-4 mb-8">
+                <!-- Row 1: Add Balance & Services -->
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
+                    <!-- Add Balance Button -->
+                    <a href="#" class="card bg-green-600 text-white shadow-lg hover:bg-green-700 transition-colors">
+                        <div class="card-body items-center text-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                            </svg>
+                            <h2 class="card-title">Add Balance</h2>
+                        </div>
+                    </a>
                     <a href="#" class="card bg-primary text-primary-content shadow-lg hover:bg-primary-focus transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.5 1.5H8.25A2.25 2.25 0 0 0 6 3.75v16.5a2.25 2.25 0 0 0 2.25 2.25h7.5A2.25 2.25 0 0 0 18 20.25V3.75a2.25 2.25 0 0 0-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" /></svg>
@@ -134,6 +148,10 @@
                             <h2 class="card-title">Bkash</h2>
                         </div>
                     </a>
+                </div>
+
+                <!-- Row 2: More Services -->
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
                     <a href="#" class="card bg-success text-success-content shadow-lg hover:bg-success-focus transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" /></svg>
@@ -158,7 +176,8 @@
                             <h2 class="card-title">Islami Bank</h2>
                         </div>
                     </a>
-                    <a href="#" class="card bg-base-300 shadow-lg hover:bg-base-200 transition-colors">
+                    <!-- Returns with changed color -->
+                    <a href="#" class="card bg-indigo-500 text-white shadow-lg hover:bg-indigo-600 transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" /></svg>
                             <h2 class="card-title">Returns</h2>
@@ -327,7 +346,7 @@
             <label for="my-drawer" class="drawer-overlay"></label>
             <ul class="menu p-4 w-60 min-h-full bg-base-100 text-base-content">
                 <li>
-                    <a class="active bg-primary text-primary-content" href="#">
+                    <a class="active bg-primary text-primary-content" href="{{ route('dashboard') }}">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                         </svg>
@@ -512,7 +531,7 @@
                             </span>
                         </summary>
                         <ul class="p-2">
-                            <li><a href="#">My Profile</a></li>
+                            <li><a href="{{ route('user.profile') }}">My Profile</a></li>
                             <li><a href="#">Google OTP</a></li>
                             <li><a href="#">Email/Mobile OTP</a></li>
                             <li><a href="#">API</a></li>
@@ -525,7 +544,7 @@
                     </details>
                 </li>
                 <li>
-                    <a href="#">
+                    <a href="{{ route('complaints.index') }}" >
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>

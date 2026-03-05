@@ -1040,9 +1040,8 @@ class AdminController extends Controller
                     $description = 'Internet Pack';
                 }
                 
-                // Amount = Offer Price (original), Cost = Main Price (user paid)
-                $offerPrice = $item->package ? ($item->package->price ?? 0) : ($item->amount ?? 0);
-                $mainPrice = $item->amount ?? 0;
+                // Cost = Original package price (offer price), Amount = User paid (main price)
+                $cost = $item->package ? ($item->package->price ?? 0) : ($item->amount ?? 0);
                 
                 return (object) [
                     'id' => $item->id,
@@ -1050,8 +1049,8 @@ class AdminController extends Controller
                     'user_id' => $item->user_id,
                     'operator' => $item->operator ?? 'N/A',
                     'mobile' => $item->mobile ?? '-',
-                    'amount' => $offerPrice,  // Offer Price (original)
-                    'cost' => $mainPrice,  // Main Price (user paid)
+                    'amount' => $item->amount ?? 0,  // Main Price (user paid)
+                    'cost' => $cost,  // Offer Price (original price)
                     'service' => 'internet',
                     'status' => $status,
                     'original_status' => $item->status,
@@ -1073,9 +1072,8 @@ class AdminController extends Controller
             ->orderBy('drive_history.created_at', 'desc')
             ->get()
             ->map(function($item) {
-                // Amount = Offer Price (original), Cost = Main Price (user paid)
-                $offerPrice = $item->package_price ?? $item->amount;
-                $mainPrice = $item->amount;
+                // Cost = Original package price (offer price), Amount = User paid (main price)
+                $cost = $item->package_price ?? $item->amount;
                 
                 return (object) [
                     'id' => $item->id,
@@ -1083,8 +1081,8 @@ class AdminController extends Controller
                     'user_id' => $item->user_id,
                     'operator' => $item->operator,
                     'mobile' => $item->mobile,
-                    'amount' => $offerPrice,  // Offer Price (original)
-                    'cost' => $mainPrice,  // Main Price (user paid)
+                    'amount' => $item->amount,  // Main Price (user paid)
+                    'cost' => $cost,  // Offer Price (original price)
                     'service' => 'drive',
                     'status' => $item->status,
                     'original_status' => $item->status,

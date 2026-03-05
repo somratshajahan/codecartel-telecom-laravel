@@ -58,6 +58,49 @@
                     </div>
                 </div>
 
+                <!-- Add Package -->
+              <div class="card bg-base-100 shadow-xl mb-6">
+    <div class="card-body">
+        <h3 class="text-lg font-bold mb-4">Add Package</h3>
+        <form method="POST" action="{{ route('admin.manage.drive.package.store', ['operator' => $operator]) }}">
+            @csrf
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <label class="label"><span class="label-text font-semibold">Package Name</span></label>
+                    <input type="text" name="name" placeholder="e.g. 50GB + 1000 min" class="input input-bordered w-full required" required />
+                </div>
+                <div>
+                    <label class="label"><span class="label-text font-semibold">Price</span></label>
+                    <input type="number" name="price" placeholder="0.00" class="input input-bordered w-full required" required />
+                </div>
+                <div>
+                    <label class="label"><span class="label-text font-semibold">Commission</span></label>
+                    <input type="number" name="commission" placeholder="0.00" class="input input-bordered w-full" />
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div>
+                    <label class="label"><span class="label-text font-semibold">Expire Date</span></label>
+                    <input type="date" name="expire" class="input input-bordered w-full" />
+                </div>
+                <div>
+                    <label class="label"><span class="label-text font-semibold">Status</span></label>
+                    <select name="status" class="select select-bordered w-full">
+                        <option value="Active" selected>Active</option>
+                        <option value="Deactive">Deactive</option>
+                    </select>
+                </div>
+                <div>
+                    <button type="submit" class="btn btn-primary w-full">Add Package</button>
+                </div>
+            </div>
+            
+        </form>
+    </div>
+</div>
+
                 <!-- Package List -->
                 <div class="card bg-base-100 shadow-xl">
                     <div class="card-body">
@@ -112,6 +155,7 @@
                                     <option value="active">Active</option>
                                     <option value="deactive">Deactive</option>
                                     <option value="delete">Delete</option>
+                                    <option value="Blank">Create Blank Package</option>
                                 </select>
                                 <button type="button" id="apply-bulk-action" class="btn btn-primary btn-sm">Apply</button>
                             </div>
