@@ -1,16 +1,22 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ optional($settings)->page_title ?? 'Buy Package' }} - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
-        <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
+    <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
 </head>
+
 <body class="min-h-screen bg-base-200 flex flex-col">
     <div class="drawer drawer-open">
         <input id="my-drawer" type="checkbox" class="drawer-toggle" />
@@ -34,8 +40,10 @@
                             </div>
                         </div>
                         <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
-                            <li><a>Profile</a></li>
-                            <li><a>Settings</a></li>
+                            @if(Auth::user() && Auth::user()->hasPermission('profile'))
+                            <li><a href="{{ route('user.profile') }}">Profile</a></li>
+                            <li><a href="{{ route('user.profile') }}">Settings</a></li>
+                            @endif
                             <li>
                                 <form method="POST" action="{{ route('logout') }}">
                                     @csrf
@@ -52,7 +60,7 @@
                 <div class="card bg-base-100 shadow-xl w-full max-w-md">
                     <div class="card-body">
                         <h2 class="card-title text-2xl mb-4">Buy Drive Package</h2>
-                        
+
                         <div class="bg-base-200 p-4 rounded-lg mb-6">
                             <h3 class="font-bold text-lg mb-2">{{ $package->name }}</h3>
                             <div class="flex justify-between mb-1">
@@ -81,7 +89,9 @@
                                     <span class="label-text font-semibold">Mobile Number</span>
                                 </label>
                                 <label class="input input-bordered flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                                    </svg>
                                     <input type="text" name="mobile" id="mobile" placeholder="01XXXXXXXXX" class="grow" maxlength="11" inputmode="numeric" pattern="[0-9]*" autocomplete="off" required />
                                 </label>
                                 <label class="label">
@@ -95,7 +105,9 @@
                                     <span class="label-text font-semibold">PIN</span>
                                 </label>
                                 <label class="input input-bordered flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                    </svg>
                                     <input type="password" name="pin" placeholder="Enter 4-digit PIN" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" class="grow" required />
                                 </label>
                             </div>
@@ -105,18 +117,22 @@
 
                         <script>
                             const operatorPrefixes = {
-                                'GrameenPhone': ['017', '013'],
-                                'Robi': ['018'],
-                                'Airtel': ['016'],
-                                'Banglalink': ['019', '014'],
-                                'Teletalk': ['015']
+                                grameenphone: ['017', '013'],
+                                gp: ['017', '013'],
+                                robi: ['018'],
+                                airtel: ['016'],
+                                banglalink: ['019', '014'],
+                                bl: ['019', '014'],
+                                teletalk: ['015'],
+                                tt: ['015']
                             };
-                            const currentOperator = '{{ $operator }}';
+                            const currentOperator = '{{ $operator }}'.toLowerCase().replace(/[^a-z]/g, '');
                             const validPrefixes = operatorPrefixes[currentOperator] || [];
 
                             const form = document.getElementById('purchaseForm');
                             const confirmBtn = document.getElementById('confirmBtn');
                             const mobileInput = document.getElementById('mobile');
+                            const mobileError = document.getElementById('mobileError');
                             const recentNumbersDiv = document.getElementById('recentNumbers');
                             let holdTimer;
                             let progress = 0;
@@ -161,20 +177,24 @@
 
                             function validateForm() {
                                 const mobile = mobileInput.value;
-                                const error = document.getElementById('mobileError');
-                                
+
+                                if (!mobile) {
+                                    mobileError.textContent = '';
+                                    return false;
+                                }
+
                                 if (mobile.length !== 11) {
-                                    error.textContent = 'Mobile number must be exactly 11 digits';
+                                    mobileError.textContent = 'Mobile number must be exactly 11 digits';
                                     return false;
                                 }
-                                
+
                                 const prefix = mobile.substring(0, 3);
-                                if (!validPrefixes.includes(prefix)) {
-                                    error.textContent = 'Invalid number for ' + currentOperator + '. Must start with: ' + validPrefixes.join(', ');
+                                if (validPrefixes.length && !validPrefixes.includes(prefix)) {
+                                    mobileError.textContent = 'Invalid number for {{ $operator }}. Must start with: ' + validPrefixes.join(', ');
                                     return false;
                                 }
-                                
-                                error.textContent = '';
+
+                                mobileError.textContent = '';
                                 return true;
                             }
 
@@ -201,9 +221,19 @@
                                 this.href = `{{ route('user.drive.confirm', ['operator' => $operator, 'package' => $package->id]) }}?mobile=${mobile}&pin=${pin}`;
                             });
 
-                            mobileInput.addEventListener('input', function(e) {
-                                this.value = this.value.replace(/[^0-9]/g, '');
-                                document.getElementById('mobileError').textContent = '';
+                            mobileInput.addEventListener('input', function() {
+                                const originalValue = this.value;
+                                const sanitizedValue = originalValue.replace(/[^0-9]/g, '');
+                                const hadInvalidCharacters = originalValue !== sanitizedValue;
+
+                                this.value = sanitizedValue;
+
+                                if (hadInvalidCharacters) {
+                                    mobileError.textContent = 'Only numbers are allowed in mobile number';
+                                    return;
+                                }
+
+                                validateForm();
                             });
                         </script>
                     </div>
@@ -220,13 +250,56 @@
         <div class="drawer-side">
             <label for="my-drawer" class="drawer-overlay"></label>
             <ul class="menu p-4 w-60 min-h-full bg-base-100 text-base-content">
-                <li><a href="{{ route('dashboard') }}"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>Dashboard</a></li>
-                <li><details><summary><span class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>New Request</span></summary><ul class="p-2"><li><a href="#">Flexiload</a></li><li><a href="#">Internet Pack</a></li><li><a href="{{ route('user.drive') }}">Drive</a></li><li><a href="#">Bkash</a></li><li><a href="#">Nagad</a></li><li><a href="#">Rocket</a></li><li><a href="#">Upay</a></li><li><a href="#">Islami Bank</a></li><li><a href="#">Bulk Flexi</a></li></ul></details></li>
-                <li><a href="#"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>Pending Request</a></li>
-                <li><details><summary><span class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5M21 21v-5h-5M4 4l16 16" /></svg>History</span></summary><ul class="p-2"><li><a href="#">All history</a></li><li><a href="#">Flexiload</a></li><li><a href="#">Internet Pack</a></li><li><a href="#">Drive</a></li><li><a href="#">Bkash</a></li><li><a href="#">Nagad</a></li><li><a href="#">Rocket</a></li><li><a href="#">Upay</a></li><li><a href="#">Islami Bank</a></li></ul></details></li>
-                <li><form method="POST" action="{{ route('logout') }}">@csrf<button type="submit" class="flex items-center gap-2 w-full"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>Logout</button></form></li>
+                <li><a href="{{ route('dashboard') }}"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                        </svg>Dashboard</a></li>
+                <li>
+                    <details>
+                        <summary><span class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                                </svg>New Request</span></summary>
+                        <ul class="p-2">
+                            <li><a href="{{ route('user.flexi') }}">Flexiload</a></li>
+                            <li><a href="#">Internet Pack</a></li>
+                            <li><a href="{{ route('user.drive') }}">Drive</a></li>
+                            <li><a href="#">Bkash</a></li>
+                            <li><a href="#">Nagad</a></li>
+                            <li><a href="#">Rocket</a></li>
+                            <li><a href="#">Upay</a></li>
+                            <li><a href="#">Islami Bank</a></li>
+                            <li><a href="{{ route('user.flexi') }}">Bulk Flexi</a></li>
+                        </ul>
+                    </details>
+                </li>
+                <li><a href="#"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>Pending Request</a></li>
+                <li>
+                    <details>
+                        <summary><span class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5M21 21v-5h-5M4 4l16 16" />
+                                </svg>History</span></summary>
+                        <ul class="p-2">
+                            <li><a href="#">All history</a></li>
+                            <li><a href="{{ route('user.flexi') }}">Flexiload</a></li>
+                            <li><a href="#">Internet Pack</a></li>
+                            <li><a href="#">Drive</a></li>
+                            <li><a href="#">Bkash</a></li>
+                            <li><a href="#">Nagad</a></li>
+                            <li><a href="#">Rocket</a></li>
+                            <li><a href="#">Upay</a></li>
+                            <li><a href="#">Islami Bank</a></li>
+                        </ul>
+                    </details>
+                </li>
+                <li>
+                    <form method="POST" action="{{ route('logout') }}">@csrf<button type="submit" class="flex items-center gap-2 w-full"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                            </svg>Logout</button></form>
+                </li>
             </ul>
         </div>
     </div>
 </body>
+
 </html>

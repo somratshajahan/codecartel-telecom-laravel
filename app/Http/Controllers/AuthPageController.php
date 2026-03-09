@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\HomepageSetting;
 use App\Models\User;
+use App\Services\DeviceApprovalService;
+use App\Services\GoogleOtpService;
 use App\Services\OtpService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -11,37 +13,35 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthPageController extends Controller
 {
-    protected $otpService;
+    private const OTP_LOGIN_SESSION_KEY = 'auth.user_otp_login';
 
-    public function __construct(OtpService $otpService)
+    protected $otpService;
+    protected $deviceApprovalService;
+    protected $googleOtpService;
+
+    public function __construct(OtpService $otpService, DeviceApprovalService $deviceApprovalService, GoogleOtpService $googleOtpService)
     {
         $this->otpService = $otpService;
+        $this->deviceApprovalService = $deviceApprovalService;
+        $this->googleOtpService = $googleOtpService;
     }
-   
+
     public function showLoginForm()
     {
-        $settings = HomepageSetting::first();
+        $settings = HomepageSetting::firstOrCreate([]);
         return view('auth.login', compact('settings'));
     }
-    public function login(Request $request) 
+    public function login(Request $request)
     {
-        $settings = HomepageSetting::first();
+        $settings = HomepageSetting::firstOrCreate([]);
+        $devicePreview = $this->deviceApprovalService->preview($request);
+        $ip = $devicePreview['ip'];
+        $browser = implode(' | ', array_filter([
+            $devicePreview['browser'],
+            $devicePreview['os'],
+            $devicePreview['device_type'],
+        ]));
 
-        // 1. IP Address get kora
-        $ip = $request->ip();
-
-        // 2. Browser logic
-        $userAgent = $request->header('User-Agent');
-        $browser = "Unknown Browser";
-
-        if (strpos($userAgent, 'Chrome') !== false) {
-            preg_match('/Chrome\/([0-9\.]+)/', $userAgent, $matches);
-            $browser = "Chrome " . ($matches[1] ?? '');
-        } elseif (strpos($userAgent, 'Firefox') !== false) {
-            $browser = "Firefox";
-        }
-
-        // View-te data pathano holo
         return view('auth.login', compact('settings', 'ip', 'browser'));
     }
 
@@ -54,45 +54,157 @@ class AuthPageController extends Controller
         ]);
 
         $remember = $request->boolean('remember');
+        $user = User::query()->where('email', $credentials['email'])->first();
 
-        if (Auth::attempt(['email' => $credentials['email'], 'password' => $credentials['password']], $remember)) {
-        /** @var User $user */
-        $user = Auth::user();
-
-           // Check if user is admin
-           if ($user->is_admin) {
-               Auth::logout();
-               return back()->withErrors([
-                   'email' => 'Admin accounts cannot login here. Please use admin login.',
-               ]);
-           }
-
-           if (! $user->pin || ! Hash::check($credentials['pin'], $user->pin)) {
-            Auth::logout();
-            return back()->withErrors(['pin' => 'Invalid PIN.']);
+        if (! $user || ! Hash::check($credentials['password'], $user->password)) {
+            return back()->withErrors([
+                'email' => 'The provided credentials do not match our records.',
+            ])->withInput($request->except(['password', 'pin']));
         }
 
-            // if user is inactive, log them out immediately
-            if (! $user->is_active) {
-                Auth::logout();
-                return back()->withErrors([
-                    'email' => 'Your account has been deactivated. Please contact support.',
-                ]);
-            }
-
-            $request->session()->regenerate();
-
-            // Redirect based on role
-            if ($user->is_admin) {
-                return redirect()->route('admin.dashboard');
-            }
-
-            return redirect()->intended('dashboard');
+        if ($user->is_admin) {
+            return back()->withErrors([
+                'email' => 'Admin accounts cannot login here. Please use admin login.',
+            ])->withInput($request->except(['password', 'pin']));
         }
 
-        return back()->withErrors([
-            'email' => 'The provided credentials do not match our records.',
+        if (! $user->pin || ! Hash::check($credentials['pin'], $user->pin)) {
+            return back()->withErrors(['pin' => 'Invalid PIN.'])
+                ->withInput($request->except(['password', 'pin']));
+        }
+
+        if (! $user->is_active) {
+            return back()->withErrors([
+                'email' => 'Your account has been deactivated. Please contact support.',
+            ])->withInput($request->except(['password', 'pin']));
+        }
+
+        $settings = HomepageSetting::first();
+
+        if ($settings?->google_otp_enabled && $user->google_otp_enabled) {
+            $request->session()->put(self::OTP_LOGIN_SESSION_KEY, [
+                'user_id' => $user->id,
+                'remember' => $remember,
+            ]);
+
+            return redirect()->route('login.otp.show');
+        }
+
+        return $this->completeLogin($user, $request, $remember);
+    }
+
+    public function showOtpChallenge(Request $request)
+    {
+        $pendingLogin = $this->pendingLogin($request);
+
+        if (! $pendingLogin) {
+            return redirect()->route('login')->withErrors([
+                'email' => 'Please login with email, password and PIN first.',
+            ]);
+        }
+
+        $settings = HomepageSetting::firstOrCreate([]);
+        $devicePreview = $this->deviceApprovalService->preview($request);
+        $pendingUser = User::query()->find($pendingLogin['user_id']);
+
+        return view('auth.otp-challenge', [
+            'settings' => $settings,
+            'ip' => $devicePreview['ip'],
+            'browser' => implode(' | ', array_filter([
+                $devicePreview['browser'],
+                $devicePreview['os'],
+                $devicePreview['device_type'],
+            ])),
+            'pendingEmail' => $pendingUser?->email,
+            'pageTitle' => 'User OTP Verification',
+            'heading' => 'Verify Google OTP',
+            'description' => 'Enter the 6 digit Google Authenticator code to complete user login.',
+            'formAction' => route('login.otp.verify'),
+            'backUrl' => route('login'),
+            'backLabel' => 'Back to User Login',
+            'submitLabel' => 'Verify & Sign In',
         ]);
+    }
+
+    public function verifyOtpChallenge(Request $request)
+    {
+        $pendingLogin = $this->pendingLogin($request);
+
+        if (! $pendingLogin) {
+            return redirect()->route('login')->withErrors([
+                'email' => 'Your login session expired. Please login again.',
+            ]);
+        }
+
+        $validated = $request->validate([
+            'otp' => ['nullable', 'digits:6'],
+        ]);
+
+        if (blank($validated['otp'] ?? null)) {
+            return back()->withErrors([
+                'otp' => 'Google OTP is required for your account.',
+            ]);
+        }
+
+        $user = User::query()->find($pendingLogin['user_id']);
+
+        if (! $user || $user->is_admin) {
+            $request->session()->forget(self::OTP_LOGIN_SESSION_KEY);
+
+            return redirect()->route('login')->withErrors([
+                'email' => 'Unable to continue this login request. Please try again.',
+            ]);
+        }
+
+        if (! $user->is_active) {
+            $request->session()->forget(self::OTP_LOGIN_SESSION_KEY);
+
+            return redirect()->route('login')->withErrors([
+                'email' => 'Your account has been deactivated. Please contact support.',
+            ]);
+        }
+
+        $settings = HomepageSetting::first();
+
+        if (! $settings?->google_otp_enabled || ! $user->google_otp_enabled) {
+            return $this->completeLogin($user, $request, (bool) ($pendingLogin['remember'] ?? false));
+        }
+
+        if (! $this->googleOtpService->verifyCode((string) $user->google_otp_secret, $validated['otp'])) {
+            return back()->withErrors([
+                'otp' => 'Invalid Google Authenticator OTP.',
+            ]);
+        }
+
+        return $this->completeLogin($user, $request, (bool) ($pendingLogin['remember'] ?? false));
+    }
+
+    protected function completeLogin(User $user, Request $request, bool $remember)
+    {
+        $deviceAccess = $this->deviceApprovalService->authorize($user, $request);
+        $request->session()->forget(self::OTP_LOGIN_SESSION_KEY);
+
+        if (! $deviceAccess['allowed']) {
+            return redirect()->route('login')
+                ->withErrors(['email' => $deviceAccess['message']])
+                ->withInput(['email' => $user->email])
+                ->cookie($this->deviceApprovalService->makeCookie($deviceAccess['token']));
+        }
+
+        Auth::login($user, $remember);
+        $request->session()->regenerate();
+
+        return redirect()->intended('dashboard')
+            ->cookie($this->deviceApprovalService->makeCookie($deviceAccess['token']));
+    }
+
+    protected function pendingLogin(Request $request): ?array
+    {
+        $pendingLogin = $request->session()->get(self::OTP_LOGIN_SESSION_KEY);
+
+        return is_array($pendingLogin) && filled($pendingLogin['user_id'] ?? null)
+            ? $pendingLogin
+            : null;
     }
 
     public function register()
@@ -118,14 +230,14 @@ class AuthPageController extends Controller
             return back()->withErrors(['otp' => 'Invalid or expired OTP.'])->withInput();
         }
 
-       $user = User::create([
-        'name' => $validated['name'],
-        'email' => $validated['email'],
-        'password' => Hash::make($validated['password']), 
-        'pin' => Hash::make($validated['pin']),          
-        'is_admin' => false,
-        'is_active' => true,
-        'level' => $validated['level'],
+        $user = User::create([
+            'name' => $validated['name'],
+            'email' => $validated['email'],
+            'password' => Hash::make($validated['password']),
+            'pin' => Hash::make($validated['pin']),
+            'is_admin' => false,
+            'is_active' => true,
+            'level' => $validated['level'],
         ]);
 
         Auth::login($user);
@@ -137,22 +249,22 @@ class AuthPageController extends Controller
     public function sendRegistrationOtp(Request $request)
     {
         $request->validate(['email' => ['required', 'email', 'unique:users,email']]);
-        
+
         if ($this->otpService->sendOtp($request->email, 'registration', 'email')) {
             return response()->json(['success' => true, 'message' => 'OTP sent to your email.']);
         }
-        
+
         return response()->json(['success' => false, 'message' => 'Failed to send OTP. Please check mail settings.'], 400);
     }
 
     public function sendRegistrationOtpMobile(Request $request)
     {
         $request->validate(['mobile' => ['required', 'regex:/^01[0-9]{9}$/', 'unique:users,mobile']]);
-        
+
         if ($this->otpService->sendOtp($request->mobile, 'registration', 'sms')) {
             return response()->json(['success' => true, 'message' => 'OTP sent to your mobile.']);
         }
-        
+
         return response()->json(['success' => false, 'message' => 'Failed to send OTP.'], 400);
     }
 
@@ -165,22 +277,22 @@ class AuthPageController extends Controller
     public function sendForgotPasswordOtp(Request $request)
     {
         $request->validate(['email' => ['required', 'email', 'exists:users,email']]);
-        
+
         if ($this->otpService->sendOtp($request->email, 'forgot_password', 'email')) {
             return response()->json(['success' => true, 'message' => 'OTP sent to your email.']);
         }
-        
+
         return response()->json(['success' => false, 'message' => 'Failed to send OTP.'], 400);
     }
 
     public function sendForgotPasswordOtpMobile(Request $request)
     {
         $request->validate(['mobile' => ['required', 'regex:/^01[0-9]{9}$/', 'exists:users,mobile']]);
-        
+
         if ($this->otpService->sendOtp($request->mobile, 'forgot_password', 'sms')) {
             return response()->json(['success' => true, 'message' => 'OTP sent to your mobile.']);
         }
-        
+
         return response()->json(['success' => false, 'message' => 'Failed to send OTP.'], 400);
     }
 
@@ -202,4 +314,3 @@ class AuthPageController extends Controller
         return redirect()->route('login')->with('success', 'Password reset successfully. Please login.');
     }
 }
-

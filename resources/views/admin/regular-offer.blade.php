@@ -156,7 +156,7 @@
                             <li><a>Modem Device</a></li>
                             <li><a>Recharge Block List</a></li>
                             <li><a>Api Settings</a></li>
-                            <li><a>Payment Getway</a></li>
+                            <li><a href="{{ route('admin.payment.gateway') }}">Payment Gateway</a></li>
                             <li><a>Security Settings</a></li>
                             <li><a>Deleted Accounts</a></li>
                         </ul>
@@ -202,7 +202,7 @@
                             <li><a href="{{ route('admin.homepage.edit') }}">General Settings</a></li>
                             <li><a href="{{ route('admin.mail.config') }}">Mail Configuration</a></li>
                             <li><a href="{{ route('admin.sms.config') }}">Mobile OTP Configuration</a></li>
-                            <li><a>Google OTP</a></li>
+                            <li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li>
                         </ul>
                     </details>
                 </li>

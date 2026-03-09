@@ -6,7 +6,34 @@ use Illuminate\Database\Eloquent\Model;
 
 class RegularRequest extends Model
 {
-    protected $fillable = ['user_id', 'package_id', 'operator', 'mobile', 'amount', 'status', 'description'];
+    protected $fillable = [
+        'user_id',
+        'package_id',
+        'operator',
+        'mobile',
+        'amount',
+        'status',
+        'description',
+        'balance_type',
+        'admin_status',
+        'admin_note',
+        'is_routed',
+        'route_api_id',
+        'remote_request_id',
+        'source_request_id',
+        'source_request_type',
+        'source_api_key',
+        'source_callback_url',
+        'source_client_domain',
+        'charged_at',
+        'settled_at',
+    ];
+
+    protected $casts = [
+        'is_routed' => 'boolean',
+        'charged_at' => 'datetime',
+        'settled_at' => 'datetime',
+    ];
 
     public function user()
     {

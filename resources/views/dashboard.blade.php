@@ -1,19 +1,43 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ optional($settings)->page_title ?? 'Dashboard' }} - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
-        <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
+    <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     <style>
-        body { font-family: 'Inter', sans-serif; }
+        body {
+            font-family: 'Inter', sans-serif;
+        }
     </style>
 </head>
+
 <body class="min-h-screen bg-base-200">
+    @php
+    $canAddBalance = $user->hasPermission('add_balance');
+    $canFlexi = true;
+    $canDrive = $user->hasPermission('drive');
+    $canInternet = $user->hasPermission('internet');
+    $canPendingRequests = $user->hasPermission('pending_requests');
+    $canAllHistory = $user->hasPermission('all_history');
+    $canDriveHistory = $user->hasPermission('drive_history');
+    $canProfile = $user->hasPermission('profile');
+    $canComplaints = $user->hasPermission('complaints');
+    $apiDocs = $apiDocs ?? [];
+    $usageStats = $usageStats ?? [
+    'total_spent' => 0,
+    'total_recharges' => 0,
+    'period_label' => 'No recharge history yet',
+    'recharge_desc' => 'Start with your first successful recharge',
+    'last_recharge_label' => 'No recharge yet',
+    'last_recharge_operator' => 'No successful recharge found',
+    ];
+    @endphp
     <div class="drawer lg:drawer-open">
         <input id="my-drawer" type="checkbox" class="drawer-toggle" />
         <div class="drawer-content flex flex-col">
@@ -48,15 +72,18 @@
                         <div tabindex="0" role="button" class="btn btn-ghost btn-circle avatar">
                             <div class="w-10 rounded-full bg-primary text-primary-content flex items-center justify-center overflow-hidden">
                                 @if($user->profile_picture)
-                                    <img src="{{ asset($user->profile_picture) }}" alt="Profile" class="w-full h-full object-cover">
+                                <img src="{{ asset($user->profile_picture) }}" alt="Profile" class="w-full h-full object-cover">
                                 @else
-                                    <span class="font-bold">{{ strtoupper(substr($user->name, 0, 1)) }}</span>
+                                <span class="font-bold">{{ strtoupper(substr($user->name, 0, 1)) }}</span>
                                 @endif
                             </div>
                         </div>
                         <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
+                            @if($canProfile)
                             <li><a href="{{ route('user.profile') }}">Profile</a></li>
-                            <li><a>Settings</a></li>
+                            <li><a href="{{ route('user.profile.google-otp') }}">Google OTP</a></li>
+                            <li><a href="{{ route('user.profile.api') }}">API</a></li>
+                            @endif
                             <li>
                                 <form method="POST" action="{{ route('logout') }}">
                                     @csrf
@@ -72,43 +99,48 @@
             <!-- Main Content -->
             <main class="flex-1 p-6">
                 @if(isset($showPendingPage) && $showPendingPage)
-                    <h1 class="text-3xl font-bold mb-6">My Pending Requests</h1>
-                    <div class="card bg-base-100 shadow-lg mb-8">
-                        <div class="card-body">
-                            @if($pendingRequests->count() > 0)
-                                <div class="overflow-x-auto">
-                                    <table class="table table-zebra">
-                                        <thead>
-                                            <tr>
-                                                <th>Type</th>
-                                                <th>Operator</th>
-                                                <th>Package</th>
-                                                <th>Mobile</th>
-                                                <th>Amount</th>
-                                                <th>Status</th>
-                                                <th>Date</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            @foreach($pendingRequests as $req)
-                                                <tr>
-                                                    <td><span class="badge badge-info">{{ $req->request_type ?? 'Drive' }}</span></td>
-                                                    <td><span class="badge badge-primary">{{ $req->operator }}</span></td>
-                                                    <td>{{ $req->package->name ?? 'N/A' }}</td>
-                                                    <td>{{ $req->mobile }}</td>
-                                                    <td>৳{{ number_format($req->amount, 2) }}</td>
-                                                    <td><span class="badge badge-warning">Pending</span></td>
-                                                    <td>{{ $req->created_at->format('d M Y H:i') }}</td>
-                                                </tr>
-                                            @endforeach
-                                        </tbody>
-                                    </table>
-                                </div>
-                            @else
-                                <p class="text-base-content/60 text-center">No pending requests</p>
-                            @endif
+                <h1 class="text-3xl font-bold mb-6">My Pending Requests</h1>
+                <div class="card bg-base-100 shadow-lg mb-8">
+                    <div class="card-body">
+                        @if($pendingRequests->count() > 0)
+                        <div class="overflow-x-auto">
+                            <table class="table table-zebra">
+                                <thead>
+                                    <tr>
+                                        <th>SL</th>
+                                        <th>Type</th>
+                                        <th>Operator</th>
+                                        <th>Package</th>
+                                        <th>Mobile</th>
+                                        <th>Amount</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach($pendingRequests as $req)
+                                    @php
+                                    $isManualPayment = ($req->request_category ?? '') === 'manual_payment';
+                                    @endphp
+                                    <tr>
+                                        <td>{{ $loop->iteration }}</td>
+                                        <td><span class="badge badge-info">{{ $req->request_type ?? 'Drive' }}</span></td>
+                                        <td><span class="badge badge-primary">{{ $req->operator }}</span></td>
+                                        <td>{{ (($req->request_type ?? '') === 'Flexi' || $isManualPayment) ? ($req->type ?? 'N/A') : ($req->package->name ?? 'N/A') }}</td>
+                                        <td>{{ $req->mobile }}</td>
+                                        <td>৳{{ number_format($req->amount, 2) }}</td>
+                                        <td><span class="badge badge-warning">Pending</span></td>
+                                        <td>{{ $req->created_at->format('d M Y H:i') }}</td>
+                                    </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
                         </div>
+                        @else
+                        <p class="text-base-content/60 text-center">No pending requests</p>
+                        @endif
                     </div>
+                </div>
                 @else
                 <h1 class="text-3xl font-bold">Welcome, {{ $user->name }}!</h1>
                 <p class="text-base-content/60 mb-8">Here's a quick overview of your account.</p>
@@ -116,7 +148,8 @@
                 <!-- Row 1: Add Balance & Services -->
                 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
                     <!-- Add Balance Button -->
-                    <a href="#" class="card bg-green-600 text-white shadow-lg hover:bg-green-700 transition-colors">
+                    @if($canAddBalance)
+                    <a href="{{ route('user.add.balance') }}" class="card bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -124,27 +157,40 @@
                             <h2 class="card-title">Add Balance</h2>
                         </div>
                     </a>
-                    <a href="#" class="card bg-primary text-primary-content shadow-lg hover:bg-primary-focus transition-colors">
+                    @endif
+                    <a href="{{ route('user.flexi') }}" class="card bg-primary text-primary-content shadow-lg hover:bg-primary-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.5 1.5H8.25A2.25 2.25 0 0 0 6 3.75v16.5a2.25 2.25 0 0 0 2.25 2.25h7.5A2.25 2.25 0 0 0 18 20.25V3.75a2.25 2.25 0 0 0-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.5 1.5H8.25A2.25 2.25 0 0 0 6 3.75v16.5a2.25 2.25 0 0 0 2.25 2.25h7.5A2.25 2.25 0 0 0 18 20.25V3.75a2.25 2.25 0 0 0-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" />
+                            </svg>
                             <h2 class="card-title">Flexiload</h2>
                         </div>
                     </a>
+                    @if($canDrive)
                     <a href="{{ route('user.drive') }}" class="card bg-secondary text-secondary-content shadow-lg hover:bg-secondary-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.25 15a4.5 4.5 0 0 0 4.5 4.5H18a3.75 3.75 0 0 0 1.332-7.257 3 3 0 0 0-5.26-1.72-4.5 4.5 0 0 0-8.22 5.472A4.522 4.522 0 0 0 2.25 15Z" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.25 15a4.5 4.5 0 0 0 4.5 4.5H18a3.75 3.75 0 0 0 1.332-7.257 3 3 0 0 0-5.26-1.72-4.5 4.5 0 0 0-8.22 5.472A4.522 4.522 0 0 0 2.25 15Z" />
+                            </svg>
                             <h2 class="card-title">Drive</h2>
                         </div>
                     </a>
+                    @endif
+                    @if($canInternet)
                     <a href="{{ route('user.internet') }}" class="card bg-accent text-accent-content shadow-lg hover:bg-accent-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12 18.375a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12 18.375a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+                            </svg>
                             <h2 class="card-title">Internet</h2>
                         </div>
                     </a>
+                    @endif
                     <a href="#" class="card bg-info text-info-content shadow-lg hover:bg-info-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
+                            </svg>
                             <h2 class="card-title">Bkash</h2>
                         </div>
                     </a>
@@ -154,32 +200,42 @@
                 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
                     <a href="#" class="card bg-success text-success-content shadow-lg hover:bg-success-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
+                            </svg>
                             <h2 class="card-title">Nagad</h2>
                         </div>
                     </a>
                     <a href="#" class="card bg-warning text-warning-content shadow-lg hover:bg-warning-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
+                            </svg>
                             <h2 class="card-title">Rocket</h2>
                         </div>
                     </a>
                     <a href="#" class="card bg-error text-error-content shadow-lg hover:bg-error-focus transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
+                            </svg>
                             <h2 class="card-title">Upay</h2>
                         </div>
                     </a>
                     <a href="#" class="card bg-blue-500 text-white shadow-lg hover:bg-blue-600 transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0 0 12 9.75c-2.551 0-5.056.2-7.5.582V21M3 21h18" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0 0 12 9.75c-2.551 0-5.056.2-7.5.582V21M3 21h18" />
+                            </svg>
                             <h2 class="card-title">Islami Bank</h2>
                         </div>
                     </a>
                     <!-- Returns with changed color -->
-                    <a href="#" class="card bg-indigo-500 text-white shadow-lg hover:bg-indigo-600 transition-colors">
+                    <a href="#" class="card bg-rose-600 text-white shadow-lg hover:bg-rose-700 transition-colors">
                         <div class="card-body items-center text-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+                            </svg>
                             <h2 class="card-title">Returns</h2>
                         </div>
                     </a>
@@ -190,36 +246,41 @@
                     <div class="card-body">
                         <h2 class="card-title">My Pending Requests</h2>
                         @if(isset($pendingRequests) && $pendingRequests->count() > 0)
-                            <div class="overflow-x-auto">
-                                <table class="table table-zebra">
-                                    <thead>
-                                        <tr>
-                                            <th>Type</th>
-                                            <th>Operator</th>
-                                            <th>Package</th>
-                                            <th>Mobile</th>
-                                            <th>Amount</th>
-                                            <th>Status</th>
-                                            <th>Date</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        @foreach($pendingRequests as $req)
-                                            <tr>
-                                                <td><span class="badge badge-info">{{ $req->request_type ?? 'Drive' }}</span></td>
-                                                <td><span class="badge badge-primary">{{ $req->operator }}</span></td>
-                                                <td>{{ $req->package->name ?? 'N/A' }}</td>
-                                                <td>{{ $req->mobile }}</td>
-                                                <td>৳{{ number_format($req->amount, 2) }}</td>
-                                                <td><span class="badge badge-warning">Pending</span></td>
-                                                <td>{{ $req->created_at->format('d M Y H:i') }}</td>
-                                            </tr>
-                                        @endforeach
-                                    </tbody>
-                                </table>
-                            </div>
+                        <div class="overflow-x-auto">
+                            <table class="table table-zebra">
+                                <thead>
+                                    <tr>
+                                        <th>SL</th>
+                                        <th>Type</th>
+                                        <th>Operator</th>
+                                        <th>Package</th>
+                                        <th>Mobile</th>
+                                        <th>Amount</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach($pendingRequests as $req)
+                                    @php
+                                    $isManualPayment = ($req->request_category ?? '') === 'manual_payment';
+                                    @endphp
+                                    <tr>
+                                        <td>{{ $loop->iteration }}</td>
+                                        <td><span class="badge badge-info">{{ $req->request_type ?? 'Drive' }}</span></td>
+                                        <td><span class="badge badge-primary">{{ $req->operator }}</span></td>
+                                        <td>{{ (($req->request_type ?? '') === 'Flexi' || $isManualPayment) ? ($req->type ?? 'N/A') : ($req->package->name ?? 'N/A') }}</td>
+                                        <td>{{ $req->mobile }}</td>
+                                        <td>৳{{ number_format($req->amount, 2) }}</td>
+                                        <td><span class="badge badge-warning">Pending</span></td>
+                                        <td>{{ $req->created_at->format('d M Y H:i') }}</td>
+                                    </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
                         @else
-                            <p class="text-base-content/60">No pending requests</p>
+                        <p class="text-base-content/60">No pending requests</p>
                         @endif
                     </div>
                 </div>
@@ -231,29 +292,35 @@
                         <div class="stats stats-vertical lg:stats-horizontal shadow w-full">
                             <div class="stat">
                                 <div class="stat-figure text-primary">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
                                 </div>
                                 <div class="stat-title">Total Spent</div>
-                                <div class="stat-value text-primary">৳ 5,500</div>
-                                <div class="stat-desc">Jan 1st - Feb 1st</div>
+                                <div class="stat-value text-primary">৳ {{ number_format($usageStats['total_spent'] ?? 0, 2) }}</div>
+                                <div class="stat-desc">{{ $usageStats['period_label'] ?? 'No recharge history yet' }}</div>
                             </div>
-                            
+
                             <div class="stat">
                                 <div class="stat-figure text-secondary">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
                                 </div>
                                 <div class="stat-title">Total Recharges</div>
-                                <div class="stat-value text-secondary">52</div>
-                                <div class="stat-desc text-success">↗︎ 12 (22%)</div>
+                                <div class="stat-value text-secondary">{{ number_format($usageStats['total_recharges'] ?? 0) }}</div>
+                                <div class="stat-desc text-success">{{ $usageStats['recharge_desc'] ?? 'Start with your first successful recharge' }}</div>
                             </div>
-                            
+
                             <div class="stat">
                                 <div class="stat-figure text-info">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                    </svg>
                                 </div>
                                 <div class="stat-title">Last recharge</div>
-                                <div class="stat-value">3 days ago</div>
-                                <div class="stat-desc">on Banglalink</div>
+                                <div class="stat-value">{{ $usageStats['last_recharge_label'] ?? 'No recharge yet' }}</div>
+                                <div class="stat-desc">{{ $usageStats['last_recharge_operator'] ?? 'No successful recharge found' }}</div>
                             </div>
                         </div>
                     </div>
@@ -287,7 +354,7 @@
                                             <td>Nagad</td>
                                             <td><span class="badge badge-success">Success</span></td>
                                         </tr>
-                                         <tr>
+                                        <tr>
                                             <td>2026-02-24</td>
                                             <td>৳ 200</td>
                                             <td>Rocket</td>
@@ -314,15 +381,15 @@
                                     </thead>
                                     <tbody>
                                         @forelse($lastReceived as $received)
-                                            <tr>
-                                                <td>{{ \Carbon\Carbon::parse($received->created_at)->format('Y-m-d') }}</td>
-                                                <td>৳ {{ number_format($received->amount, 2) }}</td>
-                                                <td>{{ $received->type ?? 'Balance Added' }}</td>
-                                            </tr>
+                                        <tr>
+                                            <td>{{ \Carbon\Carbon::parse($received->created_at)->format('Y-m-d') }}</td>
+                                            <td>৳ {{ number_format($received->amount, 2) }}</td>
+                                            <td>{{ $received->type ?? 'Balance Added' }}</td>
+                                        </tr>
                                         @empty
-                                            <tr>
-                                                <td colspan="3" class="text-center">No balance received yet</td>
-                                            </tr>
+                                        <tr>
+                                            <td colspan="3" class="text-center">No balance received yet</td>
+                                        </tr>
                                         @endforelse
                                     </tbody>
                                 </table>
@@ -330,6 +397,19 @@
                         </div>
                     </div>
                 </div>
+
+                @if(!empty($apiDocs))
+                <div class="card bg-base-100 shadow-lg mb-8">
+                    <div class="card-body space-y-6">
+                        <div>
+                            <h2 class="card-title text-2xl">Simple Provider API Documentation</h2>
+                            <p class="text-sm text-base-content/70">Client panel integration-er jonno quick copy-paste sample format.</p>
+                        </div>
+
+                        @include('partials.provider-api-docs-content', ['apiDocs' => $apiDocs])
+                    </div>
+                </div>
+                @endif
                 @endif
             </main>
 
@@ -337,10 +417,10 @@
             <footer class="footer items-center p-4 bg-base-300 text-base-content">
                 <div class="items-center grid-flow-col">
                     <p>Copyright © 2026 - All right reserved by Codecartel Telecom | Version 1.0.0</p>
-                </div> 
+                </div>
             </footer>
         </div>
-        
+
         <!-- Sidebar -->
         <div class="drawer-side">
             <label for="my-drawer" class="drawer-overlay"></label>
@@ -353,6 +433,7 @@
                         Dashboard
                     </a>
                 </li>
+                @if($canFlexi || $canInternet || $canDrive)
                 <li>
                     <details>
                         <summary>
@@ -364,18 +445,24 @@
                             </span>
                         </summary>
                         <ul class="p-2">
-                            <li><a href="#">Flexiload</a></li>
+                            <li><a href="{{ route('user.flexi') }}">Flexiload</a></li>
+                            @if($canInternet)
                             <li><a href="{{ route('user.internet') }}">Internet Pack</a></li>
-                            <li><a href="#">Drive</a></li>
+                            @endif
+                            @if($canDrive)
+                            <li><a href="{{ route('user.drive') }}">Drive</a></li>
+                            @endif
                             <li><a href="#">Bkash</a></li>
                             <li><a href="#">Nagad</a></li>
                             <li><a href="#">Rocket</a></li>
                             <li><a href="#">Upay</a></li>
                             <li><a href="#">Islami Bank</a></li>
-                            <li><a href="#">Bulk Flexi</a></li>
+                            <li><a href="{{ route('user.flexi') }}">Bulk Flexi</a></li>
                         </ul>
                     </details>
                 </li>
+                @endif
+                @if($canPendingRequests)
                 <li>
                     <a href="{{ route('user.pending.requests') }}" class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
@@ -385,10 +472,12 @@
                             <span>Pending Request</span>
                         </div>
                         @if(isset($pendingRequests) && $pendingRequests->count() > 0)
-                            <span class="badge badge-error badge-sm">{{ $pendingRequests->count() }}</span>
+                        <span class="badge badge-error badge-sm">{{ $pendingRequests->count() }}</span>
                         @endif
                     </a>
                 </li>
+                @endif
+                @if($canAllHistory || $canDriveHistory)
                 <li>
                     <details>
                         <summary>
@@ -400,10 +489,14 @@
                             </span>
                         </summary>
                         <ul class="p-2">
-                            <li><a href="#">All history</a></li>
-                            <li><a href="#">Flexiload</a></li>
+                            @if($canAllHistory)
+                            <li><a href="{{ route('user.all.history') }}">All history</a></li>
+                            @endif
+                            <li><a href="{{ route('user.flexi') }}">Flexiload</a></li>
                             <li><a href="#">Internet Pack</a></li>
+                            @if($canDriveHistory)
                             <li><a href="{{ route('user.drive.history') }}">Drive</a></li>
+                            @endif
                             <li><a href="#">Bkash</a></li>
                             <li><a href="#">Nagad</a></li>
                             <li><a href="#">Rocket</a></li>
@@ -412,6 +505,8 @@
                         </ul>
                     </details>
                 </li>
+                @endif
+                @if($canProfile)
                 <li>
                     <details>
                         <summary>
@@ -532,9 +627,9 @@
                         </summary>
                         <ul class="p-2">
                             <li><a href="{{ route('user.profile') }}">My Profile</a></li>
-                            <li><a href="#">Google OTP</a></li>
+                            <li><a href="{{ route('user.profile.google-otp') }}">Google OTP</a></li>
                             <li><a href="#">Email/Mobile OTP</a></li>
-                            <li><a href="#">API</a></li>
+                            <li><a href="{{ route('user.profile.api') }}">API</a></li>
                             <li><a href="#">My Rates</a></li>
                             <li><a href="#">Access Log</a></li>
                             <li><a href="#">Reseller Device logs</a></li>
@@ -543,14 +638,17 @@
                         </ul>
                     </details>
                 </li>
+                @endif
+                @if($canComplaints)
                 <li>
-                    <a href="{{ route('complaints.index') }}" >
+                    <a href="{{ route('complaints.index') }}">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                         Complain
                     </a>
                 </li>
+                @endif
                 <li>
                     <form method="POST" action="{{ route('logout') }}" id="logoutForm">
                         @csrf
@@ -566,4 +664,5 @@
         </div>
     </div>
 </body>
+
 </html>

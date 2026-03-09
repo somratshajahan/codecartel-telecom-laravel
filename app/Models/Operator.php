@@ -16,6 +16,7 @@ class Operator extends Model
         'logo_image_url',
         'sort_order',
         'is_active',
+        'logo',
     ];
 
     protected $casts = [

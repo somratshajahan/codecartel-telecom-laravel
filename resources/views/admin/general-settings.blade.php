@@ -1,16 +1,22 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ optional($settings)->page_title ?? 'General Settings' }} - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
-        <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
+    <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
 </head>
+
 <body class="min-h-screen bg-base-200">
     <div class="drawer lg:drawer-open">
         <input id="my-drawer" type="checkbox" class="drawer-toggle" />
@@ -18,7 +24,9 @@
             <div class="navbar bg-base-100 shadow-md sticky top-0 z-30">
                 <div class="flex-none">
                     <label for="my-drawer" class="btn btn-square btn-ghost">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
                     </label>
                 </div>
                 <div class="flex-1"><a href="{{ route('admin.dashboard') }}" class="text-xl font-bold px-2 hover:text-primary transition-colors">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }} - Settings</a></div>
@@ -31,13 +39,13 @@
                             <div class="flex justify-between items-center mb-6">
                                 <h2 class="text-3xl font-bold">Homepage Content Settings</h2>
                                 @if(session('success'))
-                                    <div class="badge badge-success badge-lg">{{ session('success') }}</div>
+                                <div class="badge badge-success badge-lg">{{ session('success') }}</div>
                                 @endif
                             </div>
 
                             <form method="POST" action="{{ route('admin.homepage.update') }}" enctype="multipart/form-data" class="space-y-6">
                                 @csrf
-                                
+
                                 <!-- Company Info Section -->
                                 <div class="bg-base-200 p-6 rounded-lg">
                                     <h3 class="text-xl font-semibold mb-4">Company Information</h3>
@@ -56,9 +64,9 @@
                                             <label class="label"><span class="label-text font-medium">Company Logo</span></label>
                                             <input type="file" name="company_logo" class="file-input file-input-bordered w-full" accept="image/*">
                                             @if($settings->company_logo_url)
-                                                <div class="mt-2">
-                                                    <img src="{{ asset($settings->company_logo_url) }}" alt="Logo" class="h-16">
-                                                </div>
+                                            <div class="mt-2">
+                                                <img src="{{ asset($settings->company_logo_url) }}" alt="Logo" class="h-16">
+                                            </div>
                                             @endif
                                         </div>
 
@@ -66,126 +74,50 @@
                                             <label class="label"><span class="label-text font-medium">Favicon</span></label>
                                             <input type="file" name="favicon" class="file-input file-input-bordered w-full" accept="image/x-icon,image/png">
                                             @if($settings->favicon_path)
-                                                <div class="mt-2">
-                                                    <img src="{{ asset($settings->favicon_path) }}" alt="Favicon" class="h-8">
-                                                </div>
+                                            <div class="mt-2">
+                                                <img src="{{ asset($settings->favicon_path) }}" alt="Favicon" class="h-8">
+                                            </div>
                                             @endif
                                         </div>
                                     </div>
                                 </div>
 
-                                <!-- Operators Section -->
                                 <div class="bg-base-200 p-6 rounded-lg">
-                                    <h3 class="text-xl font-semibold mb-4">Operators Section</h3>
-                                    <div class="space-y-4">
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Section Title</span></label>
-                                            <input type="text" name="operators_title" class="input input-bordered w-full" value="{{ old('operators_title', $settings->operators_title) }}">
+                                    <h3 class="text-xl font-semibold mb-2">Operator Logos</h3>
+                                    
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                        @foreach($operators as $operator)
+                                        @php
+                                        $operatorLogo = $operator->logo_image_url ?: $operator->logo;
+                                        if ($operatorLogo && !\Illuminate\Support\Str::startsWith($operatorLogo, ['http://', 'https://', '//', 'data:'])) {
+                                        $operatorLogo = asset($operatorLogo);
+                                        }
+                                        $operatorBgColor = $operator->circle_bg_color ?: '#0078C8';
+                                        $operatorCode = $operator->short_code ?: $operator->logo_text ?: strtoupper(substr((string) $operator->name, 0, 2));
+                                        @endphp
+                                        <div class="bg-base-100 border border-base-300 rounded-xl p-5 shadow-sm">
+                                            <div class="flex flex-col items-center text-center gap-4">
+                                                <div class="w-16 h-16 rounded-full flex items-center justify-center"
+                                                    style="background-color: {{ $operatorBgColor ?: '#0078C8' }};">
+                                                    @if($operatorLogo)
+                                                    <img src="{{ $operatorLogo }}" alt="{{ $operator->name }} logo" class="w-10 h-10 rounded-full object-contain bg-base-100" />
+                                                    @else
+                                                    <span class="text-white font-bold text-xl">{{ $operatorCode }}</span>
+                                                    @endif
+                                                </div>
+                                                <div class="w-full">
+                                                    <h4 class="font-semibold text-base-content">{{ $operator->name }}</h4>
+                                                    <p class="text-xs text-base-content/60 mt-1">Upload logo for all user-facing operator cards</p>
+                                                </div>
+                                                <div class="form-control w-full text-left">
+                                                    <label class="label pb-2"><span class="label-text font-medium">{{ $operator->name }} Logo</span></label>
+                                                    <input type="file" name="logos[{{ $operator->id }}]" class="file-input file-input-bordered w-full" accept="image/*" />
+                                                </div>
+                                            </div>
                                         </div>
-
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Section Subtitle</span></label>
-                                            <textarea name="operators_subtitle" class="textarea textarea-bordered w-full" rows="2">{{ old('operators_subtitle', $settings->operators_subtitle) }}</textarea>
-                                        </div>
+                                        @endforeach
                                     </div>
-                                </div>
-
-                                <!-- Features Section -->
-                                <div class="bg-base-200 p-6 rounded-lg">
-                                    <h3 class="text-xl font-semibold mb-4">Features Section</h3>
-                                    <div class="space-y-4">
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Section Title</span></label>
-                                            <input type="text" name="features_title" class="input input-bordered w-full" value="{{ old('features_title', $settings->features_title) }}">
-                                        </div>
-
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Section Subtitle</span></label>
-                                            <textarea name="features_subtitle" class="textarea textarea-bordered w-full" rows="2">{{ old('features_subtitle', $settings->features_subtitle) }}</textarea>
-                                        </div>
-
-                                        <div class="divider">Feature 1</div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Title</span></label>
-                                            <input type="text" name="feature1_title" class="input input-bordered w-full" value="{{ old('feature1_title', $settings->feature1_title) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Description</span></label>
-                                            <textarea name="feature1_description" class="textarea textarea-bordered w-full" rows="2">{{ old('feature1_description', $settings->feature1_description) }}</textarea>
-                                        </div>
-
-                                        <div class="divider">Feature 2</div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Title</span></label>
-                                            <input type="text" name="feature2_title" class="input input-bordered w-full" value="{{ old('feature2_title', $settings->feature2_title) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Description</span></label>
-                                            <textarea name="feature2_description" class="textarea textarea-bordered w-full" rows="2">{{ old('feature2_description', $settings->feature2_description) }}</textarea>
-                                        </div>
-
-                                        <div class="divider">Feature 3</div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Title</span></label>
-                                            <input type="text" name="feature3_title" class="input input-bordered w-full" value="{{ old('feature3_title', $settings->feature3_title) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Description</span></label>
-                                            <textarea name="feature3_description" class="textarea textarea-bordered w-full" rows="2">{{ old('feature3_description', $settings->feature3_description) }}</textarea>
-                                        </div>
-
-                                        <div class="divider">Feature 4</div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Title</span></label>
-                                            <input type="text" name="feature4_title" class="input input-bordered w-full" value="{{ old('feature4_title', $settings->feature4_title) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Description</span></label>
-                                            <textarea name="feature4_description" class="textarea textarea-bordered w-full" rows="2">{{ old('feature4_description', $settings->feature4_description) }}</textarea>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Statistics Section -->
-                                <div class="bg-base-200 p-6 rounded-lg">
-                                    <h3 class="text-xl font-semibold mb-4">Statistics</h3>
-                                    <div class="space-y-4">
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Customers Value</span></label>
-                                            <input type="text" name="stats_customers_value" class="input input-bordered w-full" value="{{ old('stats_customers_value', $settings->stats_customers_value) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Customers Label</span></label>
-                                            <input type="text" name="stats_customers_label" class="input input-bordered w-full" value="{{ old('stats_customers_label', $settings->stats_customers_label) }}">
-                                        </div>
-
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Recharged Value</span></label>
-                                            <input type="text" name="stats_recharged_value" class="input input-bordered w-full" value="{{ old('stats_recharged_value', $settings->stats_recharged_value) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Recharged Label</span></label>
-                                            <input type="text" name="stats_recharged_label" class="input input-bordered w-full" value="{{ old('stats_recharged_label', $settings->stats_recharged_label) }}">
-                                        </div>
-
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Operators Value</span></label>
-                                            <input type="text" name="stats_operators_value" class="input input-bordered w-full" value="{{ old('stats_operators_value', $settings->stats_operators_value) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Operators Label</span></label>
-                                            <input type="text" name="stats_operators_label" class="input input-bordered w-full" value="{{ old('stats_operators_label', $settings->stats_operators_label) }}">
-                                        </div>
-
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Service Value</span></label>
-                                            <input type="text" name="stats_service_value" class="input input-bordered w-full" value="{{ old('stats_service_value', $settings->stats_service_value) }}">
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"><span class="label-text font-medium">Service Label</span></label>
-                                            <input type="text" name="stats_service_label" class="input input-bordered w-full" value="{{ old('stats_service_label', $settings->stats_service_label) }}">
-                                        </div>
-                                    </div>
+                                    <button type="submit" class="btn btn-primary mt-6">Update All Logos</button>
                                 </div>
 
                                 <!-- Footer Section -->
@@ -256,7 +188,7 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- Sidebar -->
         <div class="drawer-side z-40">
             <label for="my-drawer" class="drawer-overlay"></label>
@@ -264,13 +196,13 @@
                 <div class="p-4 border-b border-base-200">
                     <a href="{{ route('admin.dashboard') }}" class="flex items-center gap-2">
                         @if(optional($settings)->company_logo_url)
-                            <img src="{{ asset(optional($settings)->company_logo_url) }}" alt="Logo" class="h-10 w-10 object-contain rounded-lg">
+                        <img src="{{ asset(optional($settings)->company_logo_url) }}" alt="Logo" class="h-10 w-10 object-contain rounded-lg">
                         @else
-                            <div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-primary-content" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                                </svg>
-                            </div>
+                        <div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-primary-content" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                            </svg>
+                        </div>
                         @endif
                         <span class="text-lg font-bold sidebar-text">{{ optional($settings)->company_name ?? 'Codecartel' }}</span>
                     </a>
@@ -471,7 +403,7 @@
                                 <li><a>Modem Device</a></li>
                                 <li><a>Recharge Block List</a></li>
                                 <li><a>Api Settings</a></li>
-                                <li><a>Payment Getway</a></li>
+                                <li><a href="{{ route('admin.payment.gateway') }}">Payment Gateway</a></li>
                                 <li><a>Security Settings</a></li>
                                 <li><a>Deleted Accounts</a></li>
                             </ul>
@@ -486,8 +418,8 @@
                                 Tools
                             </summary>
                             <ul>
-                                <li><a>Branding</a></li>
-                                <li><a>Device Logs</a></li>
+                                <li><a href="{{ route('admin.branding') }}">Branding</a></li>
+                                <li><a href="{{ route('admin.device.logs') }}">Device Logs</a></li>
                                 <li><a>Reseller Notice</a></li>
                                 <li><a>Login Notice</a></li>
                                 <li><a>Slides</a></li>
@@ -517,8 +449,8 @@
                                 Admin Account
                             </summary>
                             <ul>
-                                <li><a>My Profile</a></li>
-                                <li><a>Google OTP</a></li>
+                                <li><a href="{{ route('admin.profile') }}">My Profile</a></li>
+                                <li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li>
                                 <li><a>Email/Mobile OTP</a></li>
                                 <li><a>Manage Admin Users</a></li>
                                 <li><a>Change PIN</a></li>
@@ -555,7 +487,8 @@
                                 <li><a href="{{ route('admin.homepage.edit') }}" class="active">General Settings</a></li>
                                 <li><a href="{{ route('admin.mail.config') }}">Mail Configuration</a></li>
                                 <li><a href="{{ route('admin.sms.config') }}">Mobile OTP Configuration</a></li>
-                                <li><a>Google OTP</a></li>
+                                <li><a href="{{ route('admin.firebase.config') }}">Firebase Credentials</a></li>
+                                <li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li>
                             </ul>
                         </details>
                     </li>
@@ -597,4 +530,5 @@
         });
     </script>
 </body>
+
 </html>

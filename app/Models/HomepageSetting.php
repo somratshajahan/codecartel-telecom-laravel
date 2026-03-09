@@ -52,6 +52,19 @@ class HomepageSetting extends Model
         'sms_api_key',
         'sms_sender_id',
         'sms_api_url',
+        'firebase_api_key',
+        'firebase_auth_domain',
+        'firebase_project_id',
+        'firebase_storage_bucket',
+        'firebase_messaging_sender_id',
+        'firebase_app_id',
+        'firebase_vapid_key',
+        'firebase_service_account_json',
+        'google_otp_enabled',
+        'google_otp_issuer',
+    ];
+
+    protected $casts = [
+        'google_otp_enabled' => 'boolean',
     ];
 }
-

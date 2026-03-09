@@ -26,6 +26,13 @@
 
             <div class="p-6">
                 <div class="max-w-6xl mx-auto">
+                    @if(session('success'))
+                        <div class="alert alert-success mb-6">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <span>{{ session('success') }}</span>
+                        </div>
+                    @endif
+
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         <!-- Left Side - Profile Info -->
                         <div class="lg:col-span-2">
@@ -156,7 +163,7 @@
                         </div>
 
                         <!-- Right Side - Profile Picture Upload -->
-                        <div class="lg:col-span-1">
+                        <div class="lg:col-span-1 space-y-6">
                             <div class="card bg-base-100 shadow-xl">
                                 <div class="card-body">
                                     <h3 class="text-xl font-bold mb-4">Profile Picture</h3>
@@ -217,6 +224,81 @@
                                             <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                             <span>{{ session('picture_success') }}</span>
                                         </div>
+                                    @endif
+                                </div>
+                            </div>
+
+                            <div class="card bg-base-100 shadow-xl">
+                                <div class="card-body">
+                                    <div class="flex flex-col gap-3">
+                                        <div>
+                                            <h3 class="text-xl font-bold">Google Authenticator</h3>
+                                            <p class="text-sm text-base-content/70 mt-1">Admin panel থেকে নিজের account-এ Google Authenticator setup করলে admin login-এর সময় password + PIN এর সাথে 6 digit OTP লাগবে।</p>
+                                        </div>
+                                        <div class="flex gap-2 items-center flex-wrap">
+                                            <span class="badge {{ optional($settings)->google_otp_enabled ? 'badge-success' : 'badge-ghost' }}">{{ optional($settings)->google_otp_enabled ? 'Global Enabled' : 'Global Disabled' }}</span>
+                                            <span class="badge {{ $admin->google_otp_enabled ? 'badge-primary' : 'badge-warning' }}">{{ $admin->google_otp_enabled ? 'Setup Complete' : 'Not Setup' }}</span>
+                                        </div>
+                                    </div>
+
+                                    @if(optional($settings)->google_otp_enabled)
+                                        <div class="space-y-4 mt-4">
+                                            <div class="bg-base-200 rounded-xl p-4 space-y-3 text-sm">
+                                                <div class="flex justify-between gap-4"><span class="font-semibold">Issuer</span><span>{{ $settings->google_otp_issuer ?: $settings->company_name ?: 'Codecartel Telecom' }}</span></div>
+                                                <div class="flex justify-between gap-4"><span class="font-semibold">Account</span><span>{{ $admin->email }}</span></div>
+                                                <div class="flex justify-between gap-4"><span class="font-semibold">Verified</span><span>{{ $admin->google_otp_confirmed_at ? $admin->google_otp_confirmed_at->format('d M Y h:i A') : 'Pending setup' }}</span></div>
+                                            </div>
+
+                                            <div class="bg-base-200 rounded-xl p-4 space-y-3">
+                                                @if($admin->google_otp_enabled)
+                                                    <div>
+                                                        <label class="label"><span class="label-text font-medium">Saved Secret</span></label>
+                                                        <input type="text" class="input input-bordered w-full" value="{{ $googleOtpMaskedSecret }}" readonly />
+                                                    </div>
+                                                    <div class="alert alert-info text-sm">Google OTP active আছে। Off করতে চাইলে নিচে current admin PIN দিন।</div>
+                                                @else
+                                                    <div>
+                                                        <label class="label"><span class="label-text font-medium">Manual setup key</span></label>
+                                                        <input type="text" class="input input-bordered w-full font-mono" value="{{ $googleOtpSetupSecret }}" readonly />
+                                                    </div>
+                                                    <div>
+                                                        <label class="label"><span class="label-text font-medium">Authenticator URI</span></label>
+                                                        <textarea class="textarea textarea-bordered w-full text-xs" rows="4" readonly>{{ $googleOtpOtpAuthUrl }}</textarea>
+                                                    </div>
+                                                    <div class="alert alert-info text-sm">Google Authenticator app-এ manual key add করুন, তারপর generated 6 digit OTP দিয়ে enable করুন।</div>
+                                                @endif
+                                            </div>
+
+                                            @if(! $admin->google_otp_enabled)
+                                                <div class="bg-base-200 rounded-xl p-4">
+                                                    <h4 class="font-semibold text-base mb-3">Enable Google OTP</h4>
+                                                    <form action="{{ route('admin.profile.google-otp.enable') }}" method="POST" class="space-y-4">
+                                                        @csrf
+                                                        <div class="form-control">
+                                                            <label class="label"><span class="label-text">6 Digit OTP</span></label>
+                                                            <input type="text" name="otp" value="{{ old('otp') }}" class="input input-bordered" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" placeholder="Enter app OTP" required />
+                                                            @error('otp')<span class="text-error text-sm mt-2">{{ $message }}</span>@enderror
+                                                        </div>
+                                                        <button type="submit" class="btn btn-primary w-full">Enable Google Authenticator</button>
+                                                    </form>
+                                                </div>
+                                            @endif
+
+                                            <div class="bg-base-200 rounded-xl p-4">
+                                                <h4 class="font-semibold text-base mb-3">Disable Google OTP</h4>
+                                                <form action="{{ route('admin.profile.google-otp.disable') }}" method="POST" class="space-y-4">
+                                                    @csrf
+                                                    <div class="form-control">
+                                                        <label class="label"><span class="label-text">Current Admin PIN</span></label>
+                                                        <input type="password" name="disable_pin" class="input input-bordered" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" placeholder="Enter current admin PIN" {{ $admin->google_otp_enabled ? 'required' : '' }} />
+                                                        @error('disable_pin')<span class="text-error text-sm mt-2">{{ $message }}</span>@enderror
+                                                    </div>
+                                                    <button type="submit" class="btn btn-outline btn-error w-full" {{ $admin->google_otp_enabled ? '' : 'disabled' }}>Disable Google Authenticator</button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    @else
+                                        <div class="alert alert-warning mt-4 text-sm">Google OTP এখন global settings-এ off আছে। আগে <a href="{{ route('admin.google.otp.config') }}" class="link link-primary">Google OTP Configuration</a> page থেকে on করুন।</div>
                                     @endif
                                 </div>
                             </div>

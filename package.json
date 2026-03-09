@@ -16,6 +16,7 @@
     },
     "dependencies": {
         "daisyui": "^5.5.19",
+        "firebase": "^12.10.0",
         "nprogress": "^0.2.0"
     }
 }

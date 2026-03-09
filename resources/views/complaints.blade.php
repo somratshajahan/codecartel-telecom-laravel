@@ -58,7 +58,7 @@
                         </div>
                         <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
                             <li><a href="{{ route('user.profile') }}">Profile</a></li>
-                            <li><a>Settings</a></li>
+                            <li><a href="{{ route('user.profile') }}">Settings</a></li>
                             <li>
                                 <form method="POST" action="{{ route('logout') }}">
                                     @csrf
@@ -147,7 +147,7 @@
                                 <table class="table table-zebra">
                                     <thead>
                                         <tr>
-                                            <th class="w-16">ID</th>
+                                            <th class="w-24">Complaint No.</th>
                                             <th>Subject</th>
                                             <th>Message</th>
                                             <th class="w-24">Status</th>
@@ -159,7 +159,7 @@
                                     <tbody>
                                         @foreach($complaints as $complaint)
                                         <tr class="hover">
-                                            <td class="font-mono text-sm">#{{ $complaint->id }}</td>
+                                            <td class="font-mono text-sm">{{ $complaint->complaint_number ?? 'N/A' }}</td>
                                             <td class="font-medium">{{ $complaint->subject }}</td>
                                             <td class="max-w-xs truncate" title="{{ $complaint->message }}">{{ Str::limit($complaint->message, 50) }}</td>
                                             <td>

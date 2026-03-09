@@ -53,14 +53,18 @@ class ComplaintController extends Controller
         ]);
 
         try {
+            // Generate complaint number (COMP + YearMonthDay + Random 4 digits)
+            $complaintNumber = 'COMP' . date('Ymd') . rand(1000, 9999);
+
             Complaint::create([
+                'complaint_number' => $complaintNumber,
                 'subject'      => $request->subject,
                 'message'      => $request->message,
                 'sender_email' => Auth::user()->email,
                 'status'       => 'Open',             
             ]);
 
-            return back()->with('success', 'Your complaint has been submitted successfully.');
+            return back()->with('success', 'Your complaint has been submitted successfully. Complaint Number: ' . $complaintNumber);
         } catch (\Exception $e) {
             return back()->with('error', 'Something went wrong. Please try again.');
         }

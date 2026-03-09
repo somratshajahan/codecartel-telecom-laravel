@@ -4,10 +4,18 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\HomepageSetting;
+use App\Models\ManualPaymentRequest;
 use App\Models\Operator;
 use App\Models\DrivePackage;
 use App\Models\RegularPackage;
+use App\Models\ServiceModule;
+use App\Services\FirebasePushNotificationService;
+use App\Services\GoogleOtpService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\Rule;
 
 class AdminController extends Controller
 {
@@ -18,15 +26,14 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $operators = Operator::all();
-        
+
         // Calculate total amount from all users
         $totalAmount = User::where('is_admin', false)->sum('main_bal');
         $totalUsers = User::where('is_admin', false)->count();
-        
-        // Pending drive requests count
-        $pendingCount = \App\Models\DriveRequest::where('status', 'pending')->count()
-            + \App\Models\RegularRequest::where('status', 'pending')->count();
-        
+
+        // Pending requests count
+        $pendingCount = $this->pendingRequestCount();
+
         // Recharge history comparison (today vs yesterday)
         $today = \DB::table('recharge_history')
             ->whereDate('created_at', today())
@@ -34,7 +41,7 @@ class AdminController extends Controller
         $yesterday = \DB::table('recharge_history')
             ->whereDate('created_at', today()->subDay())
             ->sum('amount');
-        
+
         // Balance add history comparison (today vs yesterday)
         $balanceToday = \DB::table('balance_add_history')
             ->whereDate('created_at', today())
@@ -42,7 +49,7 @@ class AdminController extends Controller
         $balanceYesterday = \DB::table('balance_add_history')
             ->whereDate('created_at', today()->subDay())
             ->sum('amount');
-        
+
         // Operator sales percentage (today)
         $operatorSales = \DB::table('recharge_history')
             ->select('type', \DB::raw('SUM(amount) as total'))
@@ -50,7 +57,7 @@ class AdminController extends Controller
             ->whereIn('type', ['Grameenphone', 'Robi', 'Banglalink', 'Airtel', 'Teletalk'])
             ->groupBy('type')
             ->get();
-        
+
         // Mobile banking sales (today)
         $bankingSales = \DB::table('recharge_history')
             ->select('type', \DB::raw('SUM(amount) as total'))
@@ -60,6 +67,178 @@ class AdminController extends Controller
             ->get();
 
         return view('admin', compact('settings', 'operators', 'totalAmount', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales', 'pendingCount'));
+    }
+
+    protected function balanceTypeLabel(string $balanceType): string
+    {
+        return match ($balanceType) {
+            'main_bal' => 'Main Balance',
+            'drive_bal' => 'Drive Balance',
+            'bank_bal' => 'Bank Balance',
+            default => 'Balance',
+        };
+    }
+
+    protected function notifyUser(?User $user, string $title, string $body, ?string $link = null): void
+    {
+        app(FirebasePushNotificationService::class)->sendToUser($user, $title, $body, $link);
+    }
+
+    protected function notifyAllUsers(string $title, string $body, ?string $link = null): void
+    {
+        app(FirebasePushNotificationService::class)->sendToAllUsers($title, $body, $link);
+    }
+
+    protected function hasValidAdminPin(string $pin): bool
+    {
+        $admin = auth()->user();
+
+        return $admin !== null
+            && filled($admin->pin)
+            && Hash::check($pin, $admin->pin);
+    }
+
+    protected function syncRoutedSettlement(object $requestModel, string $defaultRequestType, string $status, ?string $description = null, ?string $trnxId = null): array
+    {
+        if (! (bool) ($requestModel->is_routed ?? false)) {
+            return ['ok' => true];
+        }
+
+        $callbackUrl = trim((string) ($requestModel->source_callback_url ?? ''));
+        $sourceApiKey = trim((string) ($requestModel->source_api_key ?? ''));
+        $sourceRequestId = trim((string) ($requestModel->source_request_id ?? ''));
+
+        if ($callbackUrl === '' || $sourceApiKey === '' || ! preg_match('/^[0-9]+$/', $sourceRequestId)) {
+            return [
+                'ok' => false,
+                'message' => 'Unable to sync routed request with source system.',
+            ];
+        }
+
+        $requestType = trim((string) ($requestModel->source_request_type ?? ''));
+
+        if (! in_array($requestType, ['recharge', 'drive', 'internet'], true)) {
+            $requestType = $defaultRequestType;
+        }
+
+        $clientDomain = trim((string) ($requestModel->source_client_domain ?? ''));
+        $payload = [
+            'source_request_id' => (int) $sourceRequestId,
+            'request_type' => $requestType,
+            'status' => $status,
+            'remote_request_id' => $this->resolveRoutedRemoteRequestId($requestModel),
+            'description' => filled($description) ? trim((string) $description) : null,
+            'trnx_id' => filled($trnxId) ? trim((string) $trnxId) : null,
+        ];
+
+        if ($clientDomain !== '') {
+            $payload['domain'] = $clientDomain;
+        }
+
+        $headers = [
+            'X-API-KEY' => $sourceApiKey,
+        ];
+
+        if ($clientDomain !== '') {
+            $headers['X-Client-Domain'] = $clientDomain;
+        }
+
+        try {
+            $response = Http::asJson()
+                ->acceptJson()
+                ->timeout(15)
+                ->withHeaders($headers)
+                ->post($callbackUrl, $payload);
+        } catch (\Throwable $exception) {
+            return [
+                'ok' => false,
+                'message' => 'Unable to sync routed request with source system.',
+            ];
+        }
+
+        $responseBody = $response->json();
+
+        if (! $response->successful() || (($responseBody['status'] ?? null) === 'error')) {
+            return [
+                'ok' => false,
+                'message' => 'Unable to sync routed request with source system.',
+            ];
+        }
+
+        return ['ok' => true];
+    }
+
+    protected function resolveRoutedRemoteRequestId(object $requestModel): ?string
+    {
+        $remoteRequestId = trim((string) ($requestModel->remote_request_id ?? ''));
+
+        if ($remoteRequestId !== '') {
+            return $remoteRequestId;
+        }
+
+        $localRequestId = trim((string) ($requestModel->id ?? ''));
+
+        return $localRequestId !== '' ? $localRequestId : null;
+    }
+
+    protected function pendingRequestCount(): int
+    {
+        $drivePending = Schema::hasTable('drive_requests')
+            ? \App\Models\DriveRequest::where('status', 'pending')->count()
+            : 0;
+
+        $regularPending = Schema::hasTable('regular_requests')
+            ? \App\Models\RegularRequest::where('status', 'pending')->count()
+            : 0;
+
+        $flexiPending = Schema::hasTable('flexi_requests')
+            ? \App\Models\FlexiRequest::where('status', 'pending')->count()
+            : 0;
+
+        $manualPaymentPending = Schema::hasTable('manual_payment_requests')
+            ? ManualPaymentRequest::where('status', 'pending')->count()
+            : 0;
+
+        return $drivePending + $regularPending + $flexiPending + $manualPaymentPending;
+    }
+
+    protected function storeBalanceHistory(User $user, $amount, string $type, ?string $description = null): void
+    {
+        $payload = [
+            'user_id' => $user->id,
+            'amount' => $amount,
+            'type' => $type,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        if (Schema::hasColumn('balance_add_history', 'description')) {
+            $payload['description'] = $description;
+        }
+
+        \DB::table('balance_add_history')->insert($payload);
+    }
+
+    protected function balanceNotificationMessage(string $action, string $amount, string $balanceTypeName, ?string $description = null): string
+    {
+        $message = $amount . ' Tk ' . $action . ' your ' . $balanceTypeName . '.';
+
+        if (filled($description)) {
+            $message .= ' Description: ' . $description;
+        }
+
+        return $message;
+    }
+
+    protected function filterPermissionKeys(?array $permissions, array $allowedKeys): array
+    {
+        return collect($permissions ?? [])
+            ->filter(fn($permission) => filled($permission))
+            ->map(fn($permission) => (string) $permission)
+            ->filter(fn($permission) => in_array($permission, $allowedKeys, true))
+            ->unique()
+            ->values()
+            ->all();
     }
 
     /**
@@ -79,34 +258,47 @@ class AdminController extends Controller
     {
         $validated = $request->validate([
             'balance_type' => ['required', 'in:main_bal,drive_bal,bank_bal'],
-            'amount' => ['required', 'numeric', 'min:0.01']
+            'amount' => ['required', 'numeric', 'min:0.01'],
+            'pin' => ['required', 'digits:4'],
+            'description' => ['nullable', 'string', 'max:255'],
         ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()
+                ->withErrors(['pin' => 'Invalid admin PIN.'])
+                ->withInput();
+        }
 
         $user = User::findOrFail($userId);
         $balanceType = $validated['balance_type'];
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : null;
+
         $user->$balanceType += $validated['amount'];
         $user->save();
-        
+
         // Refresh the user to ensure database changes are loaded
         $user->refresh();
 
         // Record balance addition in history
-        $balanceTypeName = match($balanceType) {
-            'main_bal' => 'Main Balance',
-            'drive_bal' => 'Drive Balance',
-            'bank_bal' => 'Bank Balance',
-            default => 'Balance'
-        };
-        
-        \DB::table('balance_add_history')->insert([
-            'user_id' => $user->id,
-            'amount' => $validated['amount'],
-            'type' => $balanceTypeName,
-            'created_at' => now(),
-            'updated_at' => now()
-        ]);
+        $balanceTypeName = $this->balanceTypeLabel($balanceType);
 
-        return redirect()->route('admin.all.resellers')->with('success', 'Balance added successfully!');
+        $this->storeBalanceHistory($user, $validated['amount'], $balanceTypeName, $description);
+
+        $this->notifyUser(
+            $user,
+            'Balance Added',
+            $this->balanceNotificationMessage(
+                'added to',
+                number_format((float) $validated['amount'], 2),
+                $balanceTypeName,
+                $description,
+            ),
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.resellers')->with('success', 'Balance added successfully!');
     }
 
     /**
@@ -126,37 +318,51 @@ class AdminController extends Controller
     {
         $validated = $request->validate([
             'balance_type' => ['required', 'in:main_bal,drive_bal,bank_bal'],
-            'amount' => ['required', 'numeric', 'min:0.01']
+            'amount' => ['required', 'numeric', 'min:0.01'],
+            'pin' => ['required', 'digits:4'],
+            'description' => ['nullable', 'string', 'max:255'],
         ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()
+                ->withErrors(['pin' => 'Invalid admin PIN.'])
+                ->withInput();
+        }
 
         $user = User::findOrFail($userId);
         $balanceType = $validated['balance_type'];
-        
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : null;
+
         // Check if user has enough balance
         if ($user->$balanceType < $validated['amount']) {
-            return redirect()->back()->with('error', 'Insufficient balance!');
+            return redirect()->back()
+                ->withInput()
+                ->with('error', 'Insufficient balance!');
         }
-        
+
         $user->$balanceType -= $validated['amount'];
         $user->save();
 
         // Record balance deduction in history
-        $balanceTypeName = match($balanceType) {
-            'main_bal' => 'Main Balance',
-            'drive_bal' => 'Drive Balance',
-            'bank_bal' => 'Bank Balance',
-            default => 'Balance'
-        };
-        
-        \DB::table('balance_add_history')->insert([
-            'user_id' => $user->id,
-            'amount' => $validated['amount'],
-            'type' => 'Returned: ' . $balanceTypeName,
-            'created_at' => now(),
-            'updated_at' => now()
-        ]);
+        $balanceTypeName = $this->balanceTypeLabel($balanceType);
 
-        return redirect()->route('admin.all.resellers')->with('success', 'Balance returned successfully!');
+        $this->storeBalanceHistory($user, $validated['amount'], 'Returned: ' . $balanceTypeName, $description);
+
+        $this->notifyUser(
+            $user,
+            'Balance Returned',
+            $this->balanceNotificationMessage(
+                'returned from',
+                number_format((float) $validated['amount'], 2),
+                $balanceTypeName,
+                $description,
+            ),
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.resellers')->with('success', 'Balance returned successfully!');
     }
 
     /**
@@ -177,30 +383,134 @@ class AdminController extends Controller
         $level = $request->query('level');
         $username = $request->query('username');
         $status = $request->query('status');
-        
+
         $query = User::where('is_admin', false)->with('parent');
-        
+
         if ($level) {
             $query->where('level', $level);
         }
-        
+
         if ($username) {
             $query->where('email', 'like', '%' . $username . '%');
         }
-        
+
         if ($status === 'active') {
             $query->where('is_active', true);
         } elseif ($status === 'inactive') {
             $query->where('is_active', false);
         }
-        
+
         $users = $query->get();
         $settings = HomepageSetting::first();
         $operators = Operator::all();
-        $pendingCount = \App\Models\DriveRequest::where('status', 'pending')->count()
-            + \App\Models\RegularRequest::where('status', 'pending')->count();
+        $pendingCount = $this->pendingRequestCount();
 
         return view('admin', compact('users', 'settings', 'operators', 'level', 'username', 'status', 'pendingCount'));
+    }
+
+    public function showReseller(User $user)
+    {
+        if ($user->is_admin) {
+            return redirect()->route('admin.resellers')->with('error', 'Invalid reseller account selected.');
+        }
+
+        $settings = HomepageSetting::first();
+        $operators = Operator::all();
+        $pendingCount = $this->pendingRequestCount();
+
+        return view('admin', compact('settings', 'operators', 'pendingCount', 'user'))
+            ->with('resellerUser', $user);
+    }
+
+    public function bulkResellerAction(Request $request)
+    {
+        $validated = $request->validate([
+            'action' => ['required', 'in:active,deactive,delete,cancel_otp'],
+            'user_ids' => ['required', 'array', 'min:1'],
+            'user_ids.*' => ['integer'],
+        ]);
+
+        $users = User::query()
+            ->where('is_admin', false)
+            ->whereIn('id', $validated['user_ids'])
+            ->get();
+
+        if ($users->isEmpty()) {
+            return redirect()->back()->with('error', 'No valid reseller account selected.');
+        }
+
+        $userIds = $users->modelKeys();
+
+        switch ($validated['action']) {
+            case 'active':
+                User::query()->whereIn('id', $userIds)->update(['is_active' => true]);
+                $message = 'Selected reseller accounts activated successfully.';
+                break;
+
+            case 'deactive':
+                User::query()->whereIn('id', $userIds)->update(['is_active' => false]);
+                $message = 'Selected reseller accounts deactivated successfully.';
+                break;
+
+            case 'delete':
+                User::query()->whereIn('id', $userIds)->delete();
+                $message = 'Selected reseller accounts deleted successfully.';
+                break;
+
+            case 'cancel_otp':
+                if (Schema::hasColumn('users', 'otp')) {
+                    User::query()->whereIn('id', $userIds)->update(['otp' => null]);
+                }
+
+                if (Schema::hasTable('otps')) {
+                    $emails = $users->pluck('email')->filter()->unique()->values();
+
+                    if ($emails->isNotEmpty()) {
+                        \DB::table('otps')->whereIn('email', $emails)->delete();
+                    }
+
+                    if (Schema::hasColumn('otps', 'mobile')) {
+                        $mobiles = $users->pluck('mobile')->filter()->unique()->values();
+
+                        if ($mobiles->isNotEmpty()) {
+                            \DB::table('otps')->whereIn('mobile', $mobiles)->delete();
+                        }
+                    }
+                }
+
+                $message = 'Selected reseller OTPs cancelled successfully.';
+                break;
+        }
+
+        return redirect()->back()->with('success', $message);
+    }
+
+    public function deletedAccounts()
+    {
+        $settings = HomepageSetting::first();
+        $pendingCount = $this->pendingRequestCount();
+        $deletedUsers = User::onlyTrashed()
+            ->where('is_admin', false)
+            ->with('parent')
+            ->orderByDesc('deleted_at')
+            ->get();
+
+        return view('admin', compact('settings', 'deletedUsers', 'pendingCount'));
+    }
+
+    public function restoreDeletedAccount(int $userId)
+    {
+        $user = User::withTrashed()
+            ->where('is_admin', false)
+            ->findOrFail($userId);
+
+        if (! $user->trashed()) {
+            return redirect()->route('admin.deleted.accounts')->with('error', 'Reseller account is not deleted.');
+        }
+
+        $user->restore();
+
+        return redirect()->route('admin.deleted.accounts')->with('success', 'Reseller account restored successfully.');
     }
 
     /**
@@ -224,12 +534,16 @@ class AdminController extends Controller
      */
     public function storeUser(Request $request)
     {
+        $allowedPermissionKeys = array_keys(User::resellerPermissionOptions());
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'min:6'],
             'pin' => ['required', 'digits:4'],
             'level' => ['required', 'in:house,dgm,dealer,seller,retailer'],
+            'permissions' => ['nullable', 'array'],
+            'permissions.*' => ['string', 'in:' . implode(',', $allowedPermissionKeys)],
         ]);
 
         User::create([
@@ -241,9 +555,54 @@ class AdminController extends Controller
             'is_active' => true,
             'level' => $validated['level'],
             'parent_id' => auth()->id(),
+            'permissions' => json_encode($this->filterPermissionKeys($validated['permissions'] ?? [], $allowedPermissionKeys)),
         ]);
 
         return redirect()->route('admin.resellers')->with('success', 'User created successfully.');
+    }
+
+    public function updateReseller(Request $request, User $user)
+    {
+        if ($user->is_admin) {
+            return redirect()->route('admin.resellers')->with('error', 'Invalid reseller account selected.');
+        }
+
+        $allowedPermissionKeys = array_keys(User::resellerPermissionOptions());
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255', 'unique:users,email,' . $user->id],
+            'password' => ['nullable', 'min:6'],
+            'pin' => ['nullable', 'digits:4'],
+            'admin_pin' => ['required', 'digits:4'],
+            'level' => ['required', 'in:house,dgm,dealer,seller,retailer'],
+            'permissions' => ['nullable', 'array'],
+            'permissions.*' => ['string', 'in:' . implode(',', $allowedPermissionKeys)],
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['admin_pin'])) {
+            return redirect()->back()
+                ->withErrors(['admin_pin' => 'Invalid admin PIN.'])
+                ->withInput();
+        }
+
+        $user->name = $validated['name'];
+        $user->email = $validated['email'];
+        $user->level = $validated['level'];
+        $user->permissions = json_encode($this->filterPermissionKeys($validated['permissions'] ?? [], $allowedPermissionKeys));
+
+        if (filled($validated['password'] ?? null)) {
+            $user->password = $validated['password'];
+        }
+
+        if (filled($validated['pin'] ?? null)) {
+            $user->pin = $validated['pin'];
+        }
+
+        $user->save();
+
+        return redirect()->route('admin.resellers.show', $user)
+            ->with('success', 'Reseller details updated successfully.');
     }
 
     /**
@@ -261,18 +620,18 @@ class AdminController extends Controller
     public function downloadBackup()
     {
         $users = User::where('is_admin', false)->get();
-        
+
         $filename = 'user_backup_' . date('Y-m-d_H-i-s') . '.csv';
-        
+
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
         ];
-        
-        $callback = function() use ($users) {
+
+        $callback = function () use ($users) {
             $file = fopen('php://output', 'w');
             fputcsv($file, ['ID', 'Name', 'Email', 'Level', 'Main Balance', 'Bank Balance', 'Drive Balance', 'Stock', 'Status', 'Created At']);
-            
+
             foreach ($users as $user) {
                 fputcsv($file, [
                     $user->id,
@@ -287,21 +646,115 @@ class AdminController extends Controller
                     $user->created_at,
                 ]);
             }
-            
+
             fclose($file);
         };
-        
+
         return response()->stream($callback, 200, $headers);
     }
 
     /**
      * Show admin profile.
      */
-    public function profile()
+    public function profile(Request $request)
     {
-        $settings = HomepageSetting::first();
+        $settings = HomepageSetting::firstOrCreate([]);
         $admin = auth()->user();
-        return view('admin.profile', compact('settings', 'admin'));
+        $googleOtpSetupSecret = null;
+        $googleOtpOtpAuthUrl = null;
+        $googleOtpMaskedSecret = null;
+
+        if ($settings->google_otp_enabled) {
+            /** @var GoogleOtpService $googleOtpService */
+            $googleOtpService = app(GoogleOtpService::class);
+
+            if ($admin->google_otp_enabled && filled($admin->google_otp_secret)) {
+                $googleOtpSetupSecret = $admin->google_otp_secret;
+                $googleOtpMaskedSecret = $googleOtpService->maskSecret($admin->google_otp_secret);
+            } else {
+                $googleOtpSetupSecret = (string) $request->session()->get('admin_google_otp_setup_secret', $googleOtpService->generateSecret());
+                $request->session()->put('admin_google_otp_setup_secret', $googleOtpSetupSecret);
+            }
+
+            $issuer = $settings->google_otp_issuer ?: $settings->company_name ?: config('app.name', 'Codecartel Telecom');
+            $googleOtpOtpAuthUrl = $googleOtpService->buildOtpAuthUrl($issuer, $admin->email, $googleOtpSetupSecret);
+        }
+
+        return view('admin.profile', compact(
+            'settings',
+            'admin',
+            'googleOtpSetupSecret',
+            'googleOtpOtpAuthUrl',
+            'googleOtpMaskedSecret'
+        ));
+    }
+
+    public function enableGoogleOtp(Request $request)
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+
+        if (! $settings->google_otp_enabled) {
+            return redirect()->route('admin.profile')->withErrors([
+                'otp' => 'Google OTP is currently disabled from admin settings.',
+            ]);
+        }
+
+        $validated = $request->validate([
+            'otp' => ['required', 'digits:6'],
+        ]);
+
+        /** @var GoogleOtpService $googleOtpService */
+        $googleOtpService = app(GoogleOtpService::class);
+        $admin = $request->user();
+        $secret = $admin->google_otp_enabled && filled($admin->google_otp_secret)
+            ? (string) $admin->google_otp_secret
+            : (string) $request->session()->get('admin_google_otp_setup_secret');
+
+        if (blank($secret)) {
+            $secret = $googleOtpService->generateSecret();
+            $request->session()->put('admin_google_otp_setup_secret', $secret);
+        }
+
+        if (! $googleOtpService->verifyCode($secret, $validated['otp'])) {
+            return back()->withErrors([
+                'otp' => 'Invalid Google Authenticator OTP.',
+            ])->withInput();
+        }
+
+        $admin->forceFill([
+            'google_otp_secret' => $secret,
+            'google_otp_enabled' => true,
+            'google_otp_confirmed_at' => now(),
+        ])->save();
+
+        $request->session()->forget('admin_google_otp_setup_secret');
+
+        return redirect()->route('admin.profile')->with('success', 'Google Authenticator enabled successfully for your admin account!');
+    }
+
+    public function disableGoogleOtp(Request $request)
+    {
+        $validated = $request->validate([
+            'disable_pin' => ['required', 'digits:4'],
+        ]);
+
+        $admin = $request->user();
+
+        if (! $admin->pin || ! Hash::check($validated['disable_pin'], $admin->pin)) {
+            return back()->withErrors([
+                'disable_pin' => 'Current admin PIN is incorrect.',
+            ]);
+        }
+
+        $admin->forceFill([
+            'google_otp_secret' => null,
+            'google_otp_enabled' => false,
+            'google_otp_confirmed_at' => null,
+        ])->save();
+
+        $request->session()->forget('admin_google_otp_setup_secret');
+
+        return redirect()->route('admin.profile')->with('success', 'Google Authenticator disabled successfully for your admin account!');
     }
 
     /**
@@ -380,7 +833,7 @@ class AdminController extends Controller
         $settings = HomepageSetting::first();
         $admins = User::where('is_admin', true)->get();
         $isFirstAdmin = auth()->user()->is_first_admin ?? false;
-        
+
         return view('admin.manage-admins', compact('settings', 'admins', 'isFirstAdmin'));
     }
 
@@ -459,7 +912,7 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $operators = Operator::all();
-        
+
         $operatorsList = [
             ['name' => 'Robi', 'code' => 'RB'],
             ['name' => 'GrameenPhone', 'code' => 'GP'],
@@ -468,11 +921,11 @@ class AdminController extends Controller
             ['name' => 'Airtel', 'code' => 'AT']
         ];
         $driveData = [];
-        
+
         foreach ($operatorsList as $operator) {
             $active = DrivePackage::where('operator', $operator['name'])->where('status', 'active')->count();
             $deactive = DrivePackage::where('operator', $operator['name'])->where('status', 'deactive')->count();
-            
+
             $driveData[] = [
                 'operator' => $operator['name'],
                 'opcode' => $operator['code'],
@@ -480,7 +933,7 @@ class AdminController extends Controller
                 'deactive' => $deactive
             ];
         }
-        
+
         return view('admin.drive-offer', compact('settings', 'operators', 'driveData'));
     }
 
@@ -491,7 +944,7 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $packages = DrivePackage::where('operator', $operator)
-            ->when(request('search'), function($query) {
+            ->when(request('search'), function ($query) {
                 $query->where('name', 'like', '%' . request('search') . '%');
             })
             ->latest('id')
@@ -534,7 +987,8 @@ class AdminController extends Controller
             'comm' => 0
         ]);
 
-        return response()->json(['success' => true]);
+        return redirect()->route('admin.manage.drive.package', ['operator' => $operator])
+            ->with('success', 'Package added successfully!');
     }
 
     /**
@@ -612,7 +1066,7 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $packages = RegularPackage::where('operator', $operator)
-            ->when(request('search'), function($query) {
+            ->when(request('search'), function ($query) {
                 $query->where('name', 'like', '%' . request('search') . '%');
             })
             ->latest('id')
@@ -655,7 +1109,8 @@ class AdminController extends Controller
             'comm' => 0
         ]);
 
-        return response()->json(['success' => true]);
+        return redirect()->route('admin.manage.regular.package', ['operator' => $operator])
+            ->with('success', 'Package added successfully!');
     }
 
     /**
@@ -697,15 +1152,29 @@ class AdminController extends Controller
     /**
      * Show pending drive requests.
      */
-    public function pendingDriveRequests()
+    public function pendingDriveRequests(Request $request)
     {
         $settings = HomepageSetting::first();
         $operators = Operator::all();
+
+        $show = (int) $request->query('show', 50);
+        if (! in_array($show, [25, 50, 100], true)) {
+            $show = 50;
+        }
+
+        $number = $request->query('number');
+        $reseller = $request->query('reseller');
+        $service = $request->query('service');
+        $status = $request->query('status');
+        $dateFrom = $request->query('date_from');
+        $dateTo = $request->query('date_to');
+
         $driveRequests = \App\Models\DriveRequest::where('status', 'pending')
             ->with(['user', 'package'])
             ->get()
             ->map(function ($item) {
                 $item->request_type = 'Drive';
+                $item->display_status = $item->admin_status ?? $item->status;
                 return $item;
             });
 
@@ -714,15 +1183,93 @@ class AdminController extends Controller
             ->get()
             ->map(function ($item) {
                 $item->request_type = 'Internet';
+                $item->display_status = $item->admin_status ?? $item->status;
                 return $item;
             });
 
+        $flexiRequests = Schema::hasTable('flexi_requests')
+            ? \App\Models\FlexiRequest::where('status', 'pending')
+            ->with('user')
+            ->get()
+            ->map(function ($item) {
+                $item->request_type = 'Flexi';
+                $item->display_status = $item->status;
+                return $item;
+            })
+            : collect();
+
+        $manualRequests = Schema::hasTable('manual_payment_requests')
+            ? ManualPaymentRequest::where('status', 'pending')
+            ->with('user')
+            ->get()
+            ->map(function ($item) {
+                $item->request_type = $item->method;
+                $item->request_category = 'manual_payment';
+                $item->display_status = $item->status;
+                $item->operator = $item->method;
+                $item->mobile = $item->sender_number;
+                $item->type = $item->transaction_id;
+                return $item;
+            })
+            : collect();
+
         $requests = $driveRequests
             ->concat($regularRequests)
+            ->concat($flexiRequests)
+            ->concat($manualRequests)
             ->sortByDesc('created_at')
             ->values();
-        $pendingCount = $requests->count();
-        $totalAmount = 0;
+
+        if ($number) {
+            $requests = $requests->filter(function ($item) use ($number) {
+                return stripos((string) ($item->mobile ?? ''), $number) !== false
+                    || stripos((string) ($item->operator ?? ''), $number) !== false
+                    || stripos((string) ($item->transaction_id ?? ''), $number) !== false;
+            })->values();
+        }
+
+        if ($reseller) {
+            $requests = $requests->filter(function ($item) use ($reseller) {
+                return stripos((string) ($item->user->name ?? ''), $reseller) !== false;
+            })->values();
+        }
+
+        if ($service) {
+            $requests = $requests->filter(function ($item) use ($service) {
+                return strtolower((string) ($item->request_type ?? 'Drive')) === strtolower($service);
+            })->values();
+        }
+
+        if ($status) {
+            $requests = $requests->filter(function ($item) use ($status) {
+                return strtolower((string) ($item->display_status ?? $item->status ?? '')) === strtolower($status);
+            })->values();
+        }
+
+        if ($dateFrom || $dateTo) {
+            $startDate = $dateFrom ? \Carbon\Carbon::parse($dateFrom)->startOfDay() : null;
+            $endDate = $dateTo ? \Carbon\Carbon::parse($dateTo)->endOfDay() : null;
+
+            $requests = $requests->filter(function ($item) use ($startDate, $endDate) {
+                $createdAt = $item->created_at instanceof \Carbon\Carbon
+                    ? $item->created_at
+                    : \Carbon\Carbon::parse($item->created_at);
+
+                if ($startDate && $createdAt->lt($startDate)) {
+                    return false;
+                }
+
+                if ($endDate && $createdAt->gt($endDate)) {
+                    return false;
+                }
+
+                return true;
+            })->values();
+        }
+
+        $pendingCount = $this->pendingRequestCount();
+        $totalAmount = $requests->sum('amount');
+        $requests = $requests->take($show)->values();
         $totalUsers = 0;
         $today = 0;
         $yesterday = 0;
@@ -730,7 +1277,351 @@ class AdminController extends Controller
         $balanceYesterday = 0;
         $operatorSales = collect();
         $bankingSales = collect();
-        return view('admin', compact('settings', 'operators', 'requests', 'pendingCount', 'totalAmount', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales'));
+        return view('admin', compact('settings', 'operators', 'requests', 'pendingCount', 'totalAmount', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales', 'show', 'number', 'reseller', 'service', 'status', 'dateFrom', 'dateTo'));
+    }
+
+    public function bulkPendingRequestAction(Request $request)
+    {
+        $filterQuery = $this->pendingRequestFilterQuery($request);
+
+        $validated = $request->validate([
+            'bulk_action' => ['required', 'in:resend,waiting,manual_complete,process,cancel'],
+            'request_keys' => ['nullable', 'array'],
+            'request_keys.*' => ['required', 'regex:/^(drive|internet):[0-9]+$/'],
+            'bulk_note' => ['nullable', 'string', 'max:1000'],
+            'pin' => ['required', 'digits:4'],
+        ]);
+
+        $requestKeys = collect($validated['request_keys'] ?? [])->unique()->values();
+
+        if ($requestKeys->isEmpty()) {
+            return redirect()
+                ->route('admin.pending.drive.requests', $filterQuery)
+                ->withInput($request->except('pin'))
+                ->with('error', 'Please select at least one Drive or Internet pending request.');
+        }
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()
+                ->route('admin.pending.drive.requests', $filterQuery)
+                ->withInput($request->except('pin'))
+                ->with('error', 'Invalid PIN!');
+        }
+
+        $action = $validated['bulk_action'];
+        $note = trim((string) ($validated['bulk_note'] ?? ''));
+        $selectedRequests = $requestKeys
+            ->map(function (string $requestKey) {
+                [$type, $id] = explode(':', $requestKey, 2);
+
+                return [
+                    'type' => $type,
+                    'id' => (int) $id,
+                ];
+            });
+
+        if (
+            in_array($action, ['resend', 'waiting', 'process'], true)
+            && (! Schema::hasColumn('drive_requests', 'admin_status')
+                || ! Schema::hasColumn('regular_requests', 'admin_status'))
+        ) {
+            return redirect()
+                ->route('admin.pending.drive.requests', $filterQuery)
+                ->withInput($request->except('pin'))
+                ->with('error', 'Please run the latest pending request migration before using this bulk action.');
+        }
+
+        $processed = 0;
+
+        foreach ($selectedRequests as $selectedRequest) {
+            $processed += match ($action) {
+                'manual_complete' => $selectedRequest['type'] === 'drive'
+                    ? (int) $this->bulkCompleteDriveRequest($selectedRequest['id'], $note)
+                    : (int) $this->bulkCompleteRegularRequest($selectedRequest['id'], $note),
+                'cancel' => $selectedRequest['type'] === 'drive'
+                    ? (int) $this->bulkCancelDriveRequest($selectedRequest['id'])
+                    : (int) $this->bulkCancelRegularRequest($selectedRequest['id']),
+                default => $selectedRequest['type'] === 'drive'
+                    ? (int) $this->bulkUpdateDriveRequestWorkflow($selectedRequest['id'], $action, $note)
+                    : (int) $this->bulkUpdateRegularRequestWorkflow($selectedRequest['id'], $action, $note),
+            };
+        }
+
+        if ($processed === 0) {
+            return redirect()
+                ->route('admin.pending.drive.requests', $filterQuery)
+                ->withInput($request->except('pin'))
+                ->with('error', 'No pending requests were updated.');
+        }
+
+        return redirect()
+            ->route('admin.pending.drive.requests', $filterQuery)
+            ->with('success', 'Selected pending requests updated successfully.');
+    }
+
+    protected function pendingRequestFilterQuery(Request $request): array
+    {
+        return collect($request->only([
+            'show',
+            'number',
+            'reseller',
+            'service',
+            'status',
+            'date_from',
+            'date_to',
+        ]))
+            ->filter(fn($value) => $value !== null && $value !== '')
+            ->all();
+    }
+
+    protected function clearPendingWorkflowColumns(string $table): array
+    {
+        $payload = [];
+
+        if (Schema::hasColumn($table, 'admin_status')) {
+            $payload['admin_status'] = null;
+        }
+
+        if (Schema::hasColumn($table, 'admin_note')) {
+            $payload['admin_note'] = null;
+        }
+
+        return $payload;
+    }
+
+    protected function bulkUpdateDriveRequestWorkflow(int $id, string $action, string $note = ''): bool
+    {
+        $driveRequest = \App\Models\DriveRequest::with('user')
+            ->where('status', 'pending')
+            ->find($id);
+
+        if (! $driveRequest || ! Schema::hasColumn('drive_requests', 'admin_status')) {
+            return false;
+        }
+
+        $payload = ['admin_status' => $action];
+        if (Schema::hasColumn('drive_requests', 'admin_note')) {
+            $payload['admin_note'] = $note !== '' ? $note : null;
+        }
+
+        $driveRequest->update($payload);
+
+        $message = match ($action) {
+            'waiting' => 'is waiting for processing.',
+            'process' => 'is being processed.',
+            default => 'was resent for processing.',
+        };
+
+        $this->notifyUser(
+            $driveRequest->user,
+            'Drive Request Updated',
+            'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' ' . $message,
+            route('dashboard'),
+        );
+
+        return true;
+    }
+
+    protected function bulkUpdateRegularRequestWorkflow(int $id, string $action, string $note = ''): bool
+    {
+        $regularRequest = \App\Models\RegularRequest::with('user')
+            ->where('status', 'pending')
+            ->find($id);
+
+        if (! $regularRequest || ! Schema::hasColumn('regular_requests', 'admin_status')) {
+            return false;
+        }
+
+        $payload = ['admin_status' => $action];
+
+        if (Schema::hasColumn('regular_requests', 'admin_note')) {
+            $payload['admin_note'] = $note !== '' ? $note : null;
+        }
+
+        if ($note !== '' && Schema::hasColumn('regular_requests', 'description')) {
+            $payload['description'] = $note;
+        }
+
+        $regularRequest->update($payload);
+
+        $message = match ($action) {
+            'waiting' => 'is waiting for processing.',
+            'process' => 'is being processed.',
+            default => 'was resent for processing.',
+        };
+
+        $this->notifyUser(
+            $regularRequest->user,
+            'Internet Request Updated',
+            'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' ' . $message,
+            route('dashboard'),
+        );
+
+        return true;
+    }
+
+    protected function bulkCompleteDriveRequest(int $id, string $note = ''): bool
+    {
+        $driveRequest = \App\Models\DriveRequest::with('user')
+            ->where('status', 'pending')
+            ->find($id);
+
+        if (! $driveRequest) {
+            return false;
+        }
+
+        $sync = $this->syncRoutedSettlement(
+            $driveRequest,
+            'drive',
+            'approved',
+            $note !== '' ? $note : 'Bulk manual complete',
+        );
+
+        if (! ($sync['ok'] ?? false)) {
+            return false;
+        }
+
+        $payload = array_merge(['status' => 'approved'], $this->clearPendingWorkflowColumns('drive_requests'));
+        $driveRequest->update($payload);
+
+        \DB::table('drive_history')->insert([
+            'user_id' => $driveRequest->user_id,
+            'package_id' => $driveRequest->package_id,
+            'operator' => $driveRequest->operator,
+            'mobile' => $driveRequest->mobile,
+            'amount' => $driveRequest->amount,
+            'status' => 'success',
+            'description' => $note !== '' ? $note : 'Bulk manual complete',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->notifyUser(
+            $driveRequest->user,
+            'Drive Offer Success',
+            'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' was approved.',
+            route('dashboard'),
+        );
+
+        return true;
+    }
+
+    protected function bulkCompleteRegularRequest(int $id, string $note = ''): bool
+    {
+        $regularRequest = \App\Models\RegularRequest::with('user')
+            ->where('status', 'pending')
+            ->find($id);
+
+        if (! $regularRequest) {
+            return false;
+        }
+
+        $description = $note !== '' ? $note : 'Bulk manual complete';
+        $sync = $this->syncRoutedSettlement($regularRequest, 'internet', 'approved', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return false;
+        }
+
+        $payload = array_merge([
+            'status' => 'approved',
+            'description' => $description,
+        ], $this->clearPendingWorkflowColumns('regular_requests'));
+
+        $regularRequest->update($payload);
+
+        $this->notifyUser(
+            $regularRequest->user,
+            'Internet Pack Success',
+            'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' was approved.',
+            route('dashboard'),
+        );
+
+        return true;
+    }
+
+    protected function bulkCancelDriveRequest(int $id): bool
+    {
+        $driveRequest = \App\Models\DriveRequest::with('user')
+            ->where('status', 'pending')
+            ->find($id);
+
+        if (! $driveRequest) {
+            return false;
+        }
+
+        $isRouted = (bool) ($driveRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($driveRequest, 'drive', 'cancelled');
+
+        if (! ($sync['ok'] ?? false)) {
+            return false;
+        }
+
+        $payload = array_merge(['status' => 'rejected'], $this->clearPendingWorkflowColumns('drive_requests'));
+        $driveRequest->update($payload);
+
+        $user = $driveRequest->user;
+
+        if (! $isRouted) {
+            $balanceType = $driveRequest->balance_type ?? 'drive_bal';
+
+            if (! in_array($balanceType, ['drive_bal', 'main_bal'], true)) {
+                $balanceType = 'drive_bal';
+            }
+
+            $user->{$balanceType} += $driveRequest->amount;
+            $user->save();
+        }
+
+        $this->notifyUser(
+            $user,
+            'Drive Offer Cancelled',
+            $isRouted
+                ? 'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' was cancelled.'
+                : 'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' was cancelled and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return true;
+    }
+
+    protected function bulkCancelRegularRequest(int $id): bool
+    {
+        $regularRequest = \App\Models\RegularRequest::with('user')
+            ->where('status', 'pending')
+            ->find($id);
+
+        if (! $regularRequest) {
+            return false;
+        }
+
+        $isRouted = (bool) ($regularRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($regularRequest, 'internet', 'cancelled');
+
+        if (! ($sync['ok'] ?? false)) {
+            return false;
+        }
+
+        $payload = array_merge(['status' => 'rejected'], $this->clearPendingWorkflowColumns('regular_requests'));
+        $regularRequest->update($payload);
+
+        $user = $regularRequest->user;
+
+        if (! $isRouted) {
+            $user->main_bal += $regularRequest->amount;
+            $user->save();
+        }
+
+        $this->notifyUser(
+            $user,
+            'Internet Pack Cancelled',
+            $isRouted
+                ? 'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' was cancelled.'
+                : 'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' was cancelled and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return true;
     }
 
     /**
@@ -750,18 +1641,26 @@ class AdminController extends Controller
     {
         $validated = $request->validate([
             'description' => 'nullable|string',
-            'pin' => 'required'
+            'pin' => 'required|digits:4'
         ]);
 
-        if (!\Hash::check($validated['pin'], auth()->user()->pin)) {
+        if (! $this->hasValidAdminPin($validated['pin'])) {
             return redirect()->back()->with('error', 'Invalid PIN!');
         }
 
         $driveRequest = \App\Models\DriveRequest::findOrFail($id);
-        
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : null;
+        $sync = $this->syncRoutedSettlement($driveRequest, 'drive', 'approved', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
         // Update request status
         $driveRequest->update(['status' => 'approved']);
-        
+
         // Add to drive history
         \DB::table('drive_history')->insert([
             'user_id' => $driveRequest->user_id,
@@ -770,10 +1669,19 @@ class AdminController extends Controller
             'mobile' => $driveRequest->mobile,
             'amount' => $driveRequest->amount,
             'status' => 'success',
-            'description' => $validated['description'],
+            'description' => $description,
             'created_at' => now(),
             'updated_at' => now()
         ]);
+
+        $driveRequest->loadMissing('user');
+
+        $this->notifyUser(
+            $driveRequest->user,
+            'Drive Offer Success',
+            'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' was approved.',
+            route('dashboard'),
+        );
 
         return redirect()->route('admin.pending.drive.requests')->with('success', 'Request approved successfully!');
     }
@@ -798,18 +1706,37 @@ class AdminController extends Controller
             'pin' => 'required|digits:4'
         ]);
 
-        if (!\Hash::check($validated['pin'], auth()->user()->pin)) {
+        if (! $this->hasValidAdminPin($validated['pin'])) {
             return redirect()->back()->with('error', 'Invalid PIN!');
         }
 
         $driveRequest = \App\Models\DriveRequest::findOrFail($id);
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : 'Request failed by admin';
+        $isRouted = (bool) ($driveRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($driveRequest, 'drive', 'rejected', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
         $driveRequest->update(['status' => 'rejected']);
-        
-        // Refund user's drive balance
+
+        // Refund user's original balance source
         $user = $driveRequest->user;
-        $user->drive_bal += $driveRequest->amount;
-        $user->save();
-        
+
+        if (! $isRouted) {
+            $balanceType = $driveRequest->balance_type ?? 'drive_bal';
+
+            if (! in_array($balanceType, ['drive_bal', 'main_bal'], true)) {
+                $balanceType = 'drive_bal';
+            }
+
+            $user->{$balanceType} += $driveRequest->amount;
+            $user->save();
+        }
+
         // Add to drive history
         \DB::table('drive_history')->insert([
             'user_id' => $driveRequest->user_id,
@@ -818,12 +1745,21 @@ class AdminController extends Controller
             'mobile' => $driveRequest->mobile,
             'amount' => $driveRequest->amount,
             'status' => 'failed',
-            'description' => $validated['description'] ?? 'Request failed by admin',
+            'description' => $description,
             'created_at' => now(),
             'updated_at' => now()
         ]);
-        
-        return redirect()->route('admin.pending.drive.requests')->with('success', 'Request failed and balance refunded!');
+
+        $this->notifyUser(
+            $user,
+            'Drive Offer Failed',
+            $isRouted
+                ? 'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' failed.'
+                : 'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' failed and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', $isRouted ? 'Request failed successfully!' : 'Request failed and balance refunded!');
     }
 
     /**
@@ -846,19 +1782,47 @@ class AdminController extends Controller
             'pin' => 'required|digits:4'
         ]);
 
-        if (!\Hash::check($validated['pin'], auth()->user()->pin)) {
+        if (! $this->hasValidAdminPin($validated['pin'])) {
             return redirect()->back()->with('error', 'Invalid PIN!');
         }
 
         $driveRequest = \App\Models\DriveRequest::findOrFail($id);
-        $driveRequest->update(['status' => 'cancelled']);
-        
-        // Refund user's drive balance
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : null;
+        $isRouted = (bool) ($driveRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($driveRequest, 'drive', 'cancelled', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
+        $driveRequest->update(['status' => 'rejected']);
+
+        // Refund user's original balance source
         $user = $driveRequest->user;
-        $user->drive_bal += $driveRequest->amount;
-        $user->save();
-        
-        return redirect()->route('admin.pending.drive.requests')->with('success', 'Request cancelled and balance refunded!');
+
+        if (! $isRouted) {
+            $balanceType = $driveRequest->balance_type ?? 'drive_bal';
+
+            if (! in_array($balanceType, ['drive_bal', 'main_bal'], true)) {
+                $balanceType = 'drive_bal';
+            }
+
+            $user->{$balanceType} += $driveRequest->amount;
+            $user->save();
+        }
+
+        $this->notifyUser(
+            $user,
+            'Drive Offer Cancelled',
+            $isRouted
+                ? 'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' was cancelled.'
+                : 'Your ' . $driveRequest->operator . ' drive request for ' . $driveRequest->mobile . ' was cancelled and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', $isRouted ? 'Request cancelled successfully!' : 'Request cancelled and balance refunded!');
     }
 
     /**
@@ -878,20 +1842,37 @@ class AdminController extends Controller
     {
         $validated = $request->validate([
             'description' => 'nullable|string',
-            'pin' => 'required'
+            'pin' => 'required|digits:4'
         ]);
 
-        if (!\Hash::check($validated['pin'], auth()->user()->pin)) {
+        if (! $this->hasValidAdminPin($validated['pin'])) {
             return redirect()->back()->with('error', 'Invalid PIN!');
         }
 
         $regularRequest = \App\Models\RegularRequest::findOrFail($id);
-        
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : 'Success';
+        $sync = $this->syncRoutedSettlement($regularRequest, 'internet', 'approved', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
         // Update status and save the admin-entered description
         $regularRequest->update([
             'status' => 'approved',
-            'description' => $validated['description'] ?? 'Success'
+            'description' => $description
         ]);
+
+        $regularRequest->loadMissing('user');
+
+        $this->notifyUser(
+            $regularRequest->user,
+            'Internet Pack Success',
+            'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' was approved.',
+            route('dashboard'),
+        );
 
         return redirect()->route('admin.pending.drive.requests')->with('success', 'Regular request approved successfully!');
     }
@@ -916,18 +1897,40 @@ class AdminController extends Controller
             'pin' => 'required|digits:4'
         ]);
 
-        if (!\Hash::check($validated['pin'], auth()->user()->pin)) {
+        if (! $this->hasValidAdminPin($validated['pin'])) {
             return redirect()->back()->with('error', 'Invalid PIN!');
         }
 
         $regularRequest = \App\Models\RegularRequest::with('user')->findOrFail($id);
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : null;
+        $isRouted = (bool) ($regularRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($regularRequest, 'internet', 'rejected', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
         $regularRequest->update(['status' => 'rejected']);
 
         $user = $regularRequest->user;
-        $user->main_bal += $regularRequest->amount;
-        $user->save();
 
-        return redirect()->route('admin.pending.drive.requests')->with('success', 'Regular request failed and balance refunded!');
+        if (! $isRouted) {
+            $user->main_bal += $regularRequest->amount;
+            $user->save();
+        }
+
+        $this->notifyUser(
+            $user,
+            'Internet Pack Failed',
+            $isRouted
+                ? 'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' failed.'
+                : 'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' failed and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', $isRouted ? 'Regular request failed successfully!' : 'Regular request failed and balance refunded!');
     }
 
     /**
@@ -950,18 +1953,354 @@ class AdminController extends Controller
             'pin' => 'required|digits:4'
         ]);
 
-        if (!\Hash::check($validated['pin'], auth()->user()->pin)) {
+        if (! $this->hasValidAdminPin($validated['pin'])) {
             return redirect()->back()->with('error', 'Invalid PIN!');
         }
 
         $regularRequest = \App\Models\RegularRequest::with('user')->findOrFail($id);
+        $description = filled($validated['description'] ?? null)
+            ? trim((string) $validated['description'])
+            : null;
+        $isRouted = (bool) ($regularRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($regularRequest, 'internet', 'cancelled', $description);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
         $regularRequest->update(['status' => 'rejected']);
 
         $user = $regularRequest->user;
-        $user->main_bal += $regularRequest->amount;
-        $user->save();
 
-        return redirect()->route('admin.pending.drive.requests')->with('success', 'Regular request cancelled and balance refunded!');
+        if (! $isRouted) {
+            $user->main_bal += $regularRequest->amount;
+            $user->save();
+        }
+
+        $this->notifyUser(
+            $user,
+            'Internet Pack Cancelled',
+            $isRouted
+                ? 'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' was cancelled.'
+                : 'Your ' . $regularRequest->operator . ' internet request for ' . $regularRequest->mobile . ' was cancelled and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', $isRouted ? 'Regular request cancelled successfully!' : 'Regular request cancelled and balance refunded!');
+    }
+
+    /**
+     * Approve flexi request (show confirm page).
+     */
+    public function approveFlexiRequest($id)
+    {
+        $settings = HomepageSetting::first();
+        $request = \App\Models\FlexiRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        return view('admin.confirm-flexi-request', compact('settings', 'request'));
+    }
+
+    /**
+     * Confirm flexi request approval.
+     */
+    public function confirmFlexiRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'trnx_id' => 'nullable|string|max:255|unique:flexi_requests,trnx_id,' . $id,
+            'pin' => 'required|digits:4',
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()->with('error', 'Invalid PIN!');
+        }
+
+        $flexiRequest = \App\Models\FlexiRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        $trnxId = trim((string) ($validated['trnx_id'] ?? ''));
+        $sync = $this->syncRoutedSettlement($flexiRequest, 'recharge', 'approved', null, $trnxId !== '' ? $trnxId : $flexiRequest->trnx_id);
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
+        $flexiRequest->update([
+            'status' => 'approved',
+            'trnx_id' => $trnxId !== '' ? $trnxId : $flexiRequest->trnx_id,
+        ]);
+
+        $this->notifyUser(
+            $flexiRequest->user,
+            'Flexi Request Success',
+            'Your ' . $flexiRequest->operator . ' ' . $flexiRequest->type . ' flexi request for ' . $flexiRequest->mobile . ' was approved.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', 'Flexi request approved successfully!');
+    }
+
+    /**
+     * Reject flexi request (show failed confirm page).
+     */
+    public function rejectFlexiRequest($id)
+    {
+        $settings = HomepageSetting::first();
+        $request = \App\Models\FlexiRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        return view('admin.confirm-failed-flexi-request', compact('settings', 'request'));
+    }
+
+    /**
+     * Confirm failed flexi request.
+     */
+    public function confirmFailedFlexiRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'pin' => 'required|digits:4',
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()->with('error', 'Invalid PIN!');
+        }
+
+        $flexiRequest = \App\Models\FlexiRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        $user = $flexiRequest->user;
+        $isRouted = (bool) ($flexiRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($flexiRequest, 'recharge', 'rejected');
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
+        \DB::transaction(function () use ($flexiRequest, $user, $isRouted) {
+            $flexiRequest->update(['status' => 'rejected']);
+
+            if (! $isRouted) {
+                $user->main_bal += $flexiRequest->amount;
+                $user->save();
+            }
+        });
+
+        $this->notifyUser(
+            $user,
+            'Flexi Request Failed',
+            $isRouted
+                ? 'Your ' . $flexiRequest->operator . ' ' . $flexiRequest->type . ' flexi request for ' . $flexiRequest->mobile . ' failed.'
+                : 'Your ' . $flexiRequest->operator . ' ' . $flexiRequest->type . ' flexi request for ' . $flexiRequest->mobile . ' failed and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', $isRouted ? 'Flexi request failed successfully!' : 'Flexi request failed and balance refunded!');
+    }
+
+    /**
+     * Cancel flexi request (show cancel confirm page).
+     */
+    public function cancelFlexiRequest($id)
+    {
+        $settings = HomepageSetting::first();
+        $request = \App\Models\FlexiRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        return view('admin.confirm-cancel-flexi-request', compact('settings', 'request'));
+    }
+
+    /**
+     * Confirm cancel flexi request.
+     */
+    public function confirmCancelFlexiRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'pin' => 'required|digits:4',
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()->with('error', 'Invalid PIN!');
+        }
+
+        $flexiRequest = \App\Models\FlexiRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        $user = $flexiRequest->user;
+        $isRouted = (bool) ($flexiRequest->is_routed ?? false);
+        $sync = $this->syncRoutedSettlement($flexiRequest, 'recharge', 'cancelled');
+
+        if (! ($sync['ok'] ?? false)) {
+            return redirect()->back()->with('error', $sync['message']);
+        }
+
+        \DB::transaction(function () use ($flexiRequest, $user, $isRouted) {
+            $flexiRequest->update(['status' => 'rejected']);
+
+            if (! $isRouted) {
+                $user->main_bal += $flexiRequest->amount;
+                $user->save();
+            }
+        });
+
+        $this->notifyUser(
+            $user,
+            'Flexi Request Cancelled',
+            $isRouted
+                ? 'Your ' . $flexiRequest->operator . ' ' . $flexiRequest->type . ' flexi request for ' . $flexiRequest->mobile . ' was cancelled.'
+                : 'Your ' . $flexiRequest->operator . ' ' . $flexiRequest->type . ' flexi request for ' . $flexiRequest->mobile . ' was cancelled and balance was refunded.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', $isRouted ? 'Flexi request cancelled successfully!' : 'Flexi request cancelled and balance refunded!');
+    }
+
+    public function approveManualPaymentRequest($id)
+    {
+        $settings = HomepageSetting::first();
+        $request = ManualPaymentRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        return view('admin.confirm-manual-payment-request', compact('settings', 'request'));
+    }
+
+    public function confirmManualPaymentRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'admin_note' => 'nullable|string|max:1000',
+            'pin' => 'required|digits:4',
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()->with('error', 'Invalid PIN!');
+        }
+
+        $manualPaymentRequest = ManualPaymentRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        $user = $manualPaymentRequest->user;
+        $adminNote = filled($validated['admin_note'] ?? null)
+            ? trim((string) $validated['admin_note'])
+            : null;
+        $historyDescription = $adminNote ?: ($manualPaymentRequest->method . ' manual payment approved. TxID: ' . $manualPaymentRequest->transaction_id);
+
+        \DB::transaction(function () use ($manualPaymentRequest, $user, $adminNote, $historyDescription) {
+            $manualPaymentRequest->update([
+                'status' => 'approved',
+                'admin_note' => $adminNote,
+            ]);
+
+            $user->main_bal += $manualPaymentRequest->amount;
+            $user->save();
+
+            if (Schema::hasTable('balance_add_history')) {
+                $this->storeBalanceHistory($user, $manualPaymentRequest->amount, strtolower($manualPaymentRequest->method), $historyDescription);
+            }
+        });
+
+        $this->notifyUser(
+            $user,
+            'Balance Request Approved',
+            'Your ' . $manualPaymentRequest->method . ' balance request of ' . number_format((float) $manualPaymentRequest->amount, 2) . ' Tk was approved and added to your main balance.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', 'Manual payment request approved successfully!');
+    }
+
+    public function failedManualPaymentRequest($id)
+    {
+        $settings = HomepageSetting::first();
+        $request = ManualPaymentRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        return view('admin.confirm-failed-manual-payment-request', compact('settings', 'request'));
+    }
+
+    public function confirmFailedManualPaymentRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'admin_note' => 'nullable|string|max:1000',
+            'pin' => 'required|digits:4',
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()->with('error', 'Invalid PIN!');
+        }
+
+        $manualPaymentRequest = ManualPaymentRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        $adminNote = filled($validated['admin_note'] ?? null)
+            ? trim((string) $validated['admin_note'])
+            : null;
+
+        $manualPaymentRequest->update([
+            'status' => 'rejected',
+            'admin_note' => $adminNote,
+        ]);
+
+        $this->notifyUser(
+            $manualPaymentRequest->user,
+            'Balance Request Failed',
+            'Your ' . $manualPaymentRequest->method . ' balance request of ' . number_format((float) $manualPaymentRequest->amount, 2) . ' Tk was marked as failed.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', 'Manual payment request marked as failed successfully!');
+    }
+
+    public function cancelManualPaymentRequest($id)
+    {
+        $settings = HomepageSetting::first();
+        $request = ManualPaymentRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        return view('admin.confirm-cancel-manual-payment-request', compact('settings', 'request'));
+    }
+
+    public function confirmCancelManualPaymentRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'admin_note' => 'nullable|string|max:1000',
+            'pin' => 'required|digits:4',
+        ]);
+
+        if (! $this->hasValidAdminPin($validated['pin'])) {
+            return redirect()->back()->with('error', 'Invalid PIN!');
+        }
+
+        $manualPaymentRequest = ManualPaymentRequest::with('user')
+            ->where('status', 'pending')
+            ->findOrFail($id);
+
+        $adminNote = filled($validated['admin_note'] ?? null)
+            ? trim((string) $validated['admin_note'])
+            : null;
+
+        $manualPaymentRequest->update([
+            'status' => 'rejected',
+            'admin_note' => $adminNote,
+        ]);
+
+        $this->notifyUser(
+            $manualPaymentRequest->user,
+            'Balance Request Cancelled',
+            'Your ' . $manualPaymentRequest->method . ' balance request of ' . number_format((float) $manualPaymentRequest->amount, 2) . ' Tk was cancelled.',
+            route('dashboard'),
+        );
+
+        return redirect()->route('admin.pending.drive.requests')->with('success', 'Manual payment request cancelled successfully!');
     }
 
     /**
@@ -976,7 +2315,7 @@ class AdminController extends Controller
             ->select('drive_history.*', 'users.name as user_name')
             ->orderBy('drive_history.created_at', 'desc')
             ->get()
-            ->map(function($item) {
+            ->map(function ($item) {
                 $item->user = (object)['name' => $item->user_name];
                 return $item;
             });
@@ -993,6 +2332,335 @@ class AdminController extends Controller
         return view('admin', compact('settings', 'operators', 'history', 'pendingCount', 'totalAmount', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales'));
     }
 
+    protected function defaultServiceModules(): array
+    {
+        return [
+            [
+                'title' => 'Flexiload',
+                'minimum_amount' => 10,
+                'maximum_amount' => 1499,
+                'minimum_length' => 11,
+                'maximum_length' => 11,
+                'auto_send_limit' => 1000.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 1,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'InternetPack',
+                'minimum_amount' => 5,
+                'maximum_amount' => 5000,
+                'minimum_length' => 11,
+                'maximum_length' => 11,
+                'auto_send_limit' => 296.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 2,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'SMS',
+                'minimum_amount' => 1,
+                'maximum_amount' => 2000,
+                'minimum_length' => 11,
+                'maximum_length' => 11,
+                'auto_send_limit' => 500.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 4,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'Internet Banking',
+                'minimum_amount' => 500,
+                'maximum_amount' => 1000000,
+                'minimum_length' => 11,
+                'maximum_length' => 20,
+                'auto_send_limit' => 20000.00,
+                'require_pin' => false,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => true,
+                'sort_order' => 5,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'Billpay',
+                'minimum_amount' => 50,
+                'maximum_amount' => 1000,
+                'minimum_length' => 5,
+                'maximum_length' => 15,
+                'auto_send_limit' => 300.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 5,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'Sonali Bank Limited',
+                'minimum_amount' => 10000,
+                'maximum_amount' => 1000000,
+                'minimum_length' => 3,
+                'maximum_length' => 20,
+                'auto_send_limit' => 25000.00,
+                'require_pin' => true,
+                'require_name' => true,
+                'require_nid' => true,
+                'require_sender' => true,
+                'sort_order' => 5,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'Bulk Flexi',
+                'minimum_amount' => 10,
+                'maximum_amount' => 5000,
+                'minimum_length' => 11,
+                'maximum_length' => 11,
+                'auto_send_limit' => 500.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 8,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'GlobalFlexi',
+                'minimum_amount' => 10,
+                'maximum_amount' => 5000,
+                'minimum_length' => 5,
+                'maximum_length' => 13,
+                'auto_send_limit' => 500.00,
+                'require_pin' => false,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 8,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'PrepaidCard',
+                'minimum_amount' => 9,
+                'maximum_amount' => 5000,
+                'minimum_length' => 5,
+                'maximum_length' => 30,
+                'auto_send_limit' => 1000.00,
+                'require_pin' => false,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 10,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'BillPay2',
+                'minimum_amount' => 10,
+                'maximum_amount' => 100000,
+                'minimum_length' => 3,
+                'maximum_length' => 90,
+                'auto_send_limit' => 5000.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 10,
+                'status' => 'active',
+            ],
+            [
+                'title' => 'BPO',
+                'minimum_amount' => 1000,
+                'maximum_amount' => 50000,
+                'minimum_length' => 11,
+                'maximum_length' => 11,
+                'auto_send_limit' => 10200.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => true,
+                'sort_order' => 12,
+                'status' => 'active',
+            ],
+        ];
+    }
+
+    protected function serviceModuleValidationRules(?ServiceModule $serviceModule = null): array
+    {
+        $titleRule = Rule::unique('service_modules', 'title');
+
+        if ($serviceModule !== null) {
+            $titleRule = $titleRule->ignore($serviceModule->id);
+        }
+
+        return [
+            'title' => ['required', 'string', 'max:255', $titleRule],
+            'minimum_amount' => ['required', 'numeric', 'min:0'],
+            'maximum_amount' => ['required', 'numeric', 'gte:minimum_amount'],
+            'minimum_length' => ['required', 'integer', 'min:1'],
+            'maximum_length' => ['required', 'integer', 'gte:minimum_length'],
+            'auto_send_limit' => ['required', 'numeric', 'min:0'],
+            'sort_order' => ['required', 'integer', 'min:0'],
+            'status' => ['required', 'in:active,deactive'],
+            'require_pin' => ['nullable', 'boolean'],
+            'require_name' => ['nullable', 'boolean'],
+            'require_nid' => ['nullable', 'boolean'],
+            'require_sender' => ['nullable', 'boolean'],
+        ];
+    }
+
+    protected function validatedServiceModulePayload(Request $request, ?ServiceModule $serviceModule = null): array
+    {
+        $validated = $request->validate($this->serviceModuleValidationRules($serviceModule));
+        $validated['require_pin'] = $request->boolean('require_pin');
+        $validated['require_name'] = $request->boolean('require_name');
+        $validated['require_nid'] = $request->boolean('require_nid');
+        $validated['require_sender'] = $request->boolean('require_sender');
+
+        return $validated;
+    }
+
+    protected function findServiceModuleOrFail($serviceModule): ServiceModule
+    {
+        return ServiceModule::query()->findOrFail($serviceModule);
+    }
+
+    /**
+     * Show service modules page.
+     */
+    public function serviceModules(Request $request)
+    {
+        $settings = HomepageSetting::first();
+        $operators = Operator::all();
+        $serviceModuleSchemaReady = Schema::hasTable('service_modules');
+        $editingServiceModule = null;
+
+        if ($serviceModuleSchemaReady) {
+            $rawServiceModules = ServiceModule::query()
+                ->orderBy('sort_order')
+                ->orderBy('title')
+                ->get();
+
+            $editId = $request->query('edit');
+            if (preg_match('/^[0-9]+$/', (string) $editId)) {
+                $editingServiceModule = ServiceModule::query()->find((int) $editId);
+            }
+        } else {
+            $rawServiceModules = collect($this->defaultServiceModules());
+        }
+
+        $serviceModules = collect($rawServiceModules)->map(function ($module) {
+            if ($module instanceof ServiceModule) {
+                $module = $module->toArray();
+            }
+
+            $module['requirements'] = [
+                'Pin' => (bool) ($module['require_pin'] ?? false),
+                'Name' => (bool) ($module['require_name'] ?? false),
+                'NID' => (bool) ($module['require_nid'] ?? false),
+                'Sender' => (bool) ($module['require_sender'] ?? false),
+            ];
+
+            return $module;
+        });
+
+        $pendingCount = $this->pendingRequestCount();
+        $totalAmount = 0;
+        $totalUsers = 0;
+        $today = 0;
+        $yesterday = 0;
+        $balanceToday = 0;
+        $balanceYesterday = 0;
+        $operatorSales = collect();
+        $bankingSales = collect();
+
+        return view('admin', compact('settings', 'operators', 'serviceModules', 'editingServiceModule', 'serviceModuleSchemaReady', 'pendingCount', 'totalAmount', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales'));
+    }
+
+    public function storeServiceModule(Request $request)
+    {
+        if (! Schema::hasTable('service_modules')) {
+            return redirect()->route('admin.service.modules')
+                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        }
+
+        ServiceModule::query()->create($this->validatedServiceModulePayload($request));
+
+        return redirect()->route('admin.service.modules')
+            ->with('success', 'Service module created successfully.');
+    }
+
+    public function updateServiceModule(Request $request, $serviceModule)
+    {
+        if (! Schema::hasTable('service_modules')) {
+            return redirect()->route('admin.service.modules')
+                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        }
+
+        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
+        $serviceModule->update($this->validatedServiceModulePayload($request, $serviceModule));
+
+        return redirect()->route('admin.service.modules')
+            ->with('success', 'Service module updated successfully.');
+    }
+
+    public function destroyServiceModule($serviceModule)
+    {
+        if (! Schema::hasTable('service_modules')) {
+            return redirect()->route('admin.service.modules')
+                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        }
+
+        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
+        $serviceModule->delete();
+
+        return redirect()->route('admin.service.modules')
+            ->with('success', 'Service module deleted successfully.');
+    }
+
+    public function toggleServiceModuleStatus($serviceModule)
+    {
+        if (! Schema::hasTable('service_modules')) {
+            return redirect()->route('admin.service.modules')
+                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        }
+
+        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
+        $serviceModule->update([
+            'status' => $serviceModule->status === 'active' ? 'deactive' : 'active',
+        ]);
+
+        return redirect()->route('admin.service.modules')
+            ->with('success', 'Service module status updated successfully.');
+    }
+
+    public function updateServiceModuleSortOrder(Request $request, $serviceModule)
+    {
+        if (! Schema::hasTable('service_modules')) {
+            return redirect()->route('admin.service.modules')
+                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        }
+
+        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
+        $validated = $request->validate([
+            'sort_order' => ['required', 'integer', 'min:0'],
+        ]);
+
+        $serviceModule->update([
+            'sort_order' => $validated['sort_order'],
+        ]);
+
+        return redirect()->route('admin.service.modules')
+            ->with('success', 'Service module sort order updated successfully.');
+    }
+
     /**
      * Show all history.
      */
@@ -1000,7 +2668,6 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $operators = Operator::all();
-        
         // Get filter parameters
         $show = $request->query('show', 50);
         $number = $request->query('number');
@@ -1009,10 +2676,10 @@ class AdminController extends Controller
         $status = $request->query('status');
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
-        
-        // Default to today if no date range is provided
+
+        // Show all history by default; only narrow results when a date filter is provided
         if (empty($dateFrom) && empty($dateTo)) {
-            $startDate = now()->startOfDay();
+            $startDate = now()->subYears(20)->startOfDay();
             $endDate = now()->endOfDay();
         } else {
             $startDate = $dateFrom ? \Carbon\Carbon::parse($dateFrom)->startOfDay() : now()->subYear()->startOfDay();
@@ -1021,6 +2688,7 @@ class AdminController extends Controller
 
         // Get all regular requests (approved, rejected, cancelled) with mobile and operator info
         $regularRequests = \App\Models\RegularRequest::with(['user', 'package'])
+            ->whereIn('status', ['approved', 'rejected', 'cancelled'])
             ->whereBetween('created_at', [$startDate, $endDate])
             ->orderBy('created_at', 'desc')
             ->get()
@@ -1031,7 +2699,7 @@ class AdminController extends Controller
                 } elseif ($item->status === 'cancelled') {
                     $status = 'cancelled';
                 }
-                
+
                 // Get description - use admin-entered description if available, otherwise use package name
                 $description = $item->description ?? '';
                 if (empty($description) && $item->package) {
@@ -1039,11 +2707,11 @@ class AdminController extends Controller
                 } elseif (empty($description)) {
                     $description = 'Internet Pack';
                 }
-                
+
                 // Amount = Offer Price (original), Cost = Main Price (user paid)
                 $offerPrice = $item->package ? ($item->package->price ?? 0) : ($item->amount ?? 0);
                 $mainPrice = $item->amount ?? 0;
-                
+
                 return (object) [
                     'id' => $item->id,
                     'user' => (object)['name' => $item->user->name ?? 'N/A'],
@@ -1072,11 +2740,11 @@ class AdminController extends Controller
             ->whereBetween('drive_history.created_at', [$startDate, $endDate])
             ->orderBy('drive_history.created_at', 'desc')
             ->get()
-            ->map(function($item) {
+            ->map(function ($item) {
                 // Amount = Offer Price (original), Cost = Main Price (user paid)
                 $offerPrice = $item->package_price ?? $item->amount;
                 $mainPrice = $item->amount;
-                
+
                 return (object) [
                     'id' => $item->id,
                     'user' => (object)['name' => $item->user_name],
@@ -1131,44 +2799,80 @@ class AdminController extends Controller
                 ];
             });
 
+        $flexiHistory = Schema::hasTable('flexi_requests')
+            ? \App\Models\FlexiRequest::with('user')
+            ->whereIn('status', ['approved', 'rejected', 'cancelled'])
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function ($item) {
+                $status = 'success';
+                if ($item->status === 'rejected') {
+                    $status = 'failed';
+                } elseif ($item->status === 'cancelled') {
+                    $status = 'cancelled';
+                }
+
+                return (object) [
+                    'id' => $item->id,
+                    'user' => (object) ['name' => $item->user->name ?? 'N/A'],
+                    'user_id' => $item->user_id,
+                    'operator' => $item->operator ?? 'Flexi',
+                    'mobile' => $item->mobile ?? '-',
+                    'amount' => $item->amount ?? 0,
+                    'cost' => $item->cost ?? $item->amount ?? 0,
+                    'service' => 'flexi',
+                    'status' => $status,
+                    'original_status' => $item->status,
+                    'balance' => $item->user->main_bal ?? 0,
+                    'trnx_id' => $item->trnx_id,
+                    'description' => trim(($item->type ?? 'Flexi') . ' Flexiload'),
+                    'sim_balance' => null,
+                    'route' => null,
+                    'created_at' => $item->created_at,
+                ];
+            })
+            : collect();
+
         // Combine all history
         $allHistory = $driveHistory
             ->concat($regularRequests)
             ->concat($regularRechargeHistory)
+            ->concat($flexiHistory)
             ->sortByDesc('created_at')
             ->values();
 
         // Apply additional filters
         if ($number) {
-            $allHistory = $allHistory->filter(function($item) use ($number) {
+            $allHistory = $allHistory->filter(function ($item) use ($number) {
                 return stripos($item->mobile, $number) !== false || stripos($item->operator, $number) !== false;
             })->values();
         }
-        
+
         if ($reseller) {
-            $allHistory = $allHistory->filter(function($item) use ($reseller) {
+            $allHistory = $allHistory->filter(function ($item) use ($reseller) {
                 return stripos($item->user->name, $reseller) !== false;
             })->values();
         }
-        
+
         if ($service) {
-            $allHistory = $allHistory->filter(function($item) use ($service) {
+            $allHistory = $allHistory->filter(function ($item) use ($service) {
                 return $item->service === $service;
             })->values();
         }
-        
+
         if ($status) {
-            $allHistory = $allHistory->filter(function($item) use ($status) {
+            $allHistory = $allHistory->filter(function ($item) use ($status) {
                 return $item->status === $status;
             })->values();
         }
-        
+
         // Calculate totals before pagination
         $totalAmount = $allHistory->sum('amount');
-        $totalCost = $allHistory->sum(function($item) {
+        $totalCost = $allHistory->sum(function ($item) {
             return $item->cost ?? 0;
         });
-        
+
         // Apply pagination
         $allHistory = $allHistory->take($show);
 
@@ -1181,7 +2885,7 @@ class AdminController extends Controller
         $balanceYesterday = 0;
         $operatorSales = collect();
         $bankingSales = collect();
-        
+
         return view('admin', compact('settings', 'operators', 'allHistory', 'pendingCount', 'totalAmount', 'totalCost', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales', 'show', 'number', 'reseller', 'service', 'status', 'dateFrom', 'dateTo'));
     }
 
@@ -1192,10 +2896,10 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $operators = Operator::all();
-        
+
         // Get filter dates (default to today only)
         $dateFilter = $request->query('date', 'today');
-        
+
         if ($dateFilter === 'today') {
             $startDate = now()->startOfDay();
             $endDate = now()->endOfDay();
@@ -1213,10 +2917,11 @@ class AdminController extends Controller
             $endDate = now()->endOfDay();
         }
 
-        // Get all regular requests (Internet Pack) - sorted by ID ascending (oldest first, newest at bottom - SL 1)
+        // Get all regular requests (Internet Pack) - sorted by latest ID first
         $internetHistory = \App\Models\RegularRequest::with(['user', 'package'])
+            ->whereIn('status', ['approved', 'rejected', 'cancelled'])
             ->whereBetween('created_at', [$startDate, $endDate])
-            ->orderBy('id', 'asc')
+            ->orderBy('id', 'desc')
             ->get()
             ->map(function ($item) {
                 $status = 'success';
@@ -1225,7 +2930,7 @@ class AdminController extends Controller
                 } elseif ($item->status === 'cancelled') {
                     $status = 'cancelled';
                 }
-                
+
                 // Get description - use admin-entered description if available, otherwise use package name
                 $description = $item->description ?? '';
                 if (empty($description) && $item->package) {
@@ -1233,7 +2938,7 @@ class AdminController extends Controller
                 } elseif (empty($description)) {
                     $description = 'Internet Pack';
                 }
-                
+
                 return (object) [
                     'id' => $item->id,
                     'user' => (object)['name' => $item->user->name ?? 'N/A'],
@@ -1264,7 +2969,7 @@ class AdminController extends Controller
         $balanceYesterday = 0;
         $operatorSales = collect();
         $bankingSales = collect();
-        
+
         return view('admin', compact('settings', 'operators', 'internetHistory', 'pendingCount', 'totalAmount', 'totalUsers', 'today', 'yesterday', 'balanceToday', 'balanceYesterday', 'operatorSales', 'bankingSales', 'dateFilter'));
     }
 
@@ -1287,6 +2992,12 @@ class AdminController extends Controller
             'expire' => $validated['expire'],
             'status' => $validated['status'],
         ]);
+
+        $this->notifyAllUsers(
+            'New Drive Offer Added',
+            $validated['operator'] . ' - ' . $validated['name'] . ' is now available.',
+            route('user.drive'),
+        );
 
         return back()->with('success', 'Drive Package added successfully!');
     }
@@ -1311,57 +3022,63 @@ class AdminController extends Controller
             'status' => $validated['status'],
         ]);
 
+        $this->notifyAllUsers(
+            'New Internet Offer Added',
+            $validated['operator'] . ' - ' . $validated['name'] . ' is now available.',
+            route('user.internet'),
+        );
+
         return back()->with('success', 'Regular Package added successfully!');
     }
 
-public function store(Request $request, $operator)
-{
-    $package = new \App\Models\DrivePackage();
-    $package->operator = $operator;
-    $package->name = $request->name;
-    $package->price = $request->price;
-    $package->commission = $request->commission ?? 0;
-    
-    $package->selling_price = $request->price - ($request->commission ?? 0);
-    
+    public function store(Request $request, $operator)
+    {
+        $package = new \App\Models\DrivePackage();
+        $package->operator = $operator;
+        $package->name = $request->name;
+        $package->price = $request->price;
+        $package->commission = $request->commission ?? 0;
 
-    $package->expire = $request->expire; 
-    
-    $package->status = strtolower($request->status); 
-    
-    $package->save();
-
-    return back()->with('success', 'Package added successfully!');
-}
-// ফর্ম দেখানোর জন্য
-// ১১০৪ নম্বর লাইনে ফাংশনের নাম পরিবর্তন করুন
-public function storeOperator(Request $request) 
-{
-    $request->validate([
-        'name' => 'required|unique:operators,name',
-        'image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048'
-    ]);
-    
-    $operator = new \App\Models\Operator();
-    $operator->name = $request->name;
-    // লোগো সেভ করার লজিক এখানে যুক্ত করতে পারেন
-    $operator->save();
-
-    return back()->with('success', 'Operator added successfully!');
-}
+        $package->selling_price = $request->price - ($request->commission ?? 0);
 
 
-public function createOperator()
-{
-    
-    $settings = \App\Models\HomepageSetting::first(); 
-    
+        $package->expire = $request->expire;
 
-    $operatorSales = collect([]); 
-    $bankingSales = collect([]); 
+        $package->status = strtolower($request->status);
 
-    return view('admin.operator.create', compact('settings', 'operatorSales', 'bankingSales')); 
-}
+        $package->save();
+
+        return back()->with('success', 'Package added successfully!');
+    }
+    // ফর্ম দেখানোর জন্য
+    // ১১০৪ নম্বর লাইনে ফাংশনের নাম পরিবর্তন করুন
+    public function storeOperator(Request $request)
+    {
+        $request->validate([
+            'name' => 'required|unique:operators,name',
+            'image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048'
+        ]);
+
+        $operator = new \App\Models\Operator();
+        $operator->name = $request->name;
+        // লোগো সেভ করার লজিক এখানে যুক্ত করতে পারেন
+        $operator->save();
+
+        return back()->with('success', 'Operator added successfully!');
+    }
+
+
+    public function createOperator()
+    {
+
+        $settings = \App\Models\HomepageSetting::first();
+
+
+        $operatorSales = collect([]);
+        $bankingSales = collect([]);
+
+        return view('admin.operator.create', compact('settings', 'operatorSales', 'bankingSales'));
+    }
 
     /**
      * Delete all history data.
@@ -1370,14 +3087,51 @@ public function createOperator()
     {
         // Delete all records from drive_history
         \DB::table('drive_history')->truncate();
-        
+
         // Delete all records from recharge_history
         \DB::table('recharge_history')->truncate();
-        
+
         // Delete all records from regular_requests
         \App\Models\RegularRequest::truncate();
-        
+
         return redirect()->route('admin.all.history')->with('success', 'All history data deleted successfully!');
     }
-}
+    /**
+     * Show all operators to manage logos/details.
+     */
+    public function manageOperators()
+    {
+        $settings = HomepageSetting::first();
+        $operators = Operator::all();
+        return view('admin.manage-operators', compact('settings', 'operators'));
+    }
 
+    /**
+     * Update operator logo and info.
+     */
+    public function updateOperator(Request $request, $id)
+    {
+        $request->validate([
+            'name' => 'required|string',
+            'logo' => 'nullable|image|mimes:jpeg,png,jpg,svg|max:1024',
+        ]);
+
+        $operator = Operator::findOrFail($id);
+
+        if ($request->hasFile('logo')) {
+            // Delete old logo if exists
+            if ($operator->logo) {
+                \Storage::disk('public')->delete($operator->logo);
+            }
+
+            // Store new logo
+            $path = $request->file('logo')->store('operators', 'public');
+            $operator->logo = $path;
+        }
+
+        $operator->name = $request->name;
+        $operator->save();
+
+        return redirect()->back()->with('success', 'Operator updated successfully!');
+    }
+}

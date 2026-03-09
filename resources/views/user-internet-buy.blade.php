@@ -1,16 +1,22 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ optional($settings)->page_title ?? 'Buy Internet Package' }} - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
-        <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
+    <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
 </head>
+
 <body class="min-h-screen bg-base-200 flex flex-col">
     <div class="drawer drawer-open">
         <input id="my-drawer" type="checkbox" class="drawer-toggle" />
@@ -48,11 +54,12 @@
                         <form id="purchaseForm">
                             <div class="form-control mb-4">
                                 <label class="label justify-center"><span class="label-text font-semibold">Mobile Number</span></label>
-                                <input type="text" id="mobile" placeholder="01XXXXXXXXX" class="input input-bordered" maxlength="11" required />
+                                <input type="text" id="mobile" placeholder="01XXXXXXXXX" class="input input-bordered" maxlength="11" inputmode="numeric" pattern="[0-9]*" autocomplete="off" required />
+                                <label class="label"><span class="label-text-alt text-error" id="mobileError"></span></label>
                             </div>
                             <div class="form-control mb-6">
                                 <label class="label justify-center"><span class="label-text font-semibold">PIN</span></label>
-                                <input type="password" id="pin" placeholder="Enter 4-digit PIN" maxlength="4" class="input input-bordered" required />
+                                <input type="password" id="pin" placeholder="Enter 4-digit PIN" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" class="input input-bordered" required />
                             </div>
 
                             <a href="#" id="confirmLink" class="btn btn-primary w-full">Confirm</a>
@@ -64,14 +71,77 @@
     </div>
 
     <script>
+        const operatorPrefixes = {
+            grameenphone: ['017', '013'],
+            gp: ['017', '013'],
+            robi: ['018'],
+            airtel: ['016'],
+            banglalink: ['019', '014'],
+            bl: ['019', '014'],
+            teletalk: ['015'],
+            tt: ['015']
+        };
+
+        const currentOperator = '{{ $operator }}'.toLowerCase().replace(/[^a-z]/g, '');
+        const validPrefixes = operatorPrefixes[currentOperator] || [];
+        const mobileInput = document.getElementById('mobile');
+        const pinInput = document.getElementById('pin');
+        const mobileError = document.getElementById('mobileError');
+
+        function validateMobile() {
+            const mobile = mobileInput.value;
+
+            if (!mobile) {
+                mobileError.textContent = '';
+                return false;
+            }
+
+            if (mobile.length !== 11) {
+                mobileError.textContent = 'Mobile number must be exactly 11 digits';
+                return false;
+            }
+
+            const prefix = mobile.substring(0, 3);
+            if (validPrefixes.length && !validPrefixes.includes(prefix)) {
+                mobileError.textContent = 'Invalid number for {{ $operator }}. Must start with: ' + validPrefixes.join(', ');
+                return false;
+            }
+
+            mobileError.textContent = '';
+            return true;
+        }
+
+        mobileInput.addEventListener('input', function() {
+            const originalValue = this.value;
+            const sanitizedValue = originalValue.replace(/[^0-9]/g, '');
+            const hadInvalidCharacters = originalValue !== sanitizedValue;
+
+            this.value = sanitizedValue;
+
+            if (hadInvalidCharacters) {
+                mobileError.textContent = 'Only numbers are allowed in mobile number';
+                return;
+            }
+
+            validateMobile();
+        });
+
+        pinInput.addEventListener('input', function() {
+            this.value = this.value.replace(/[^0-9]/g, '');
+        });
+
         document.getElementById('confirmLink').addEventListener('click', function(e) {
             e.preventDefault();
 
-            const mobile = document.getElementById('mobile').value;
-            const pin = document.getElementById('pin').value;
+            const mobile = mobileInput.value;
+            const pin = pinInput.value;
 
-            if (!mobile || mobile.length !== 11 || !pin || pin.length !== 4) {
-                alert('Please enter valid mobile and 4-digit PIN');
+            if (!validateMobile()) {
+                return;
+            }
+
+            if (!pin || pin.length !== 4) {
+                alert('Please enter valid 4-digit PIN');
                 return;
             }
 
@@ -80,4 +150,5 @@
         });
     </script>
 </body>
+
 </html>
