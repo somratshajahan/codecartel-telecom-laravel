@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\FirebasePushNotificationService;
+use App\Services\SecurityRuntimeService;
 use Illuminate\Support\Facades\DB;
 use App\Models\HomepageSetting;
 use App\Models\Operator;
@@ -26,10 +27,15 @@ class HomepageController extends Controller
         }
 
         $noticeData = DB::table('site_notices')->first();
-        $loginNotice = session('login_notice');
+        $securityRuntime = app(SecurityRuntimeService::class);
+        $loginNotice = null;
 
-        if (blank($loginNotice)) {
-            $loginNotice = trim((string) optional($noticeData)->notice_text);
+        if ($securityRuntime->isPopupNoticeEnabled()) {
+            $loginNotice = session('login_notice');
+
+            if (blank($loginNotice)) {
+                $loginNotice = trim((string) optional($noticeData)->notice_text);
+            }
         }
 
         return view('welcome', compact('settings', 'operators', 'noticeData', 'loginNotice', 'apiDocs'));

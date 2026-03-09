@@ -80,6 +80,16 @@
                             placeholder="1234" class="input input-bordered w-full" required />
                     </div>
 
+                    @if(filled($captchaQuestion ?? null))
+                    <div class="form-control mt-4">
+                        <label class="label">
+                            <span class="label-text font-medium">Security Check</span>
+                        </label>
+                        <div class="text-sm text-base-content/70 mb-2">{{ $captchaQuestion }}</div>
+                        <input type="text" name="captcha" value="{{ old('captcha') }}" placeholder="Enter answer" class="input input-bordered w-full @error('captcha') input-error @enderror" required />
+                    </div>
+                    @endif
+
                     @if(optional($settings)->google_otp_enabled)
                     <div class="alert alert-info mt-4 text-sm">
                         <span>If Google OTP is enabled on this admin account, verification will happen on the next page after password and PIN.</span>
@@ -90,6 +100,9 @@
                     <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
                     @enderror
                     @error('pin')
+                    <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
+                    @enderror
+                    @error('captcha')
                     <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
                     @enderror
                     <div class="form-control mt-6">

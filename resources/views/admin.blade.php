@@ -193,7 +193,7 @@
                     <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                         <div>
                             <h1 class="text-3xl font-bold">Service Modules</h1>
-                            <p class="text-sm text-base-content/70">Administration panel module limits, validation rules, status toggles, and sort-order controls.</p>
+                            <p class="text-sm text-base-content/70">Administration panel module limits, validation rules, and edit controls.</p>
                         </div>
                         <div class="flex gap-3">
                             <div class="stats shadow bg-base-100">
@@ -225,7 +225,7 @@
                             <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                                 <div>
                                     <h2 class="card-title text-2xl">{{ $isEditingServiceModule ? 'Edit Service Module' : 'Add Service Module' }}</h2>
-                                    <p class="text-sm text-base-content/70">Title, limits, required fields, status, ar sort order save korte parben.</p>
+                                    <p class="text-sm text-base-content/70">Title, limits, required fields, status, ar sort order update korte parben.</p>
                                 </div>
                                 @if($isEditingServiceModule)
                                 <a href="{{ route('admin.service.modules') }}#service-module-form" class="btn btn-sm btn-ghost">Cancel Edit</a>
@@ -333,15 +333,7 @@
                                                 </div>
                                             </td>
                                             <td>
-                                                @if($serviceModuleTableReady && !empty($module['id']))
-                                                <form method="POST" action="{{ route('admin.service.modules.sort', $module['id']) }}" class="flex items-center justify-end gap-2">
-                                                    @csrf
-                                                    <input type="number" name="sort_order" min="0" value="{{ $module['sort_order'] }}" class="input input-bordered input-xs w-20" required />
-                                                    <button type="submit" class="btn btn-xs btn-outline">Save</button>
-                                                </form>
-                                                @else
                                                 <span class="badge badge-outline">{{ $module['sort_order'] }}</span>
-                                                @endif
                                             </td>
                                             <td>
                                                 <span class="badge {{ $module['status'] === 'active' ? 'badge-success' : 'badge-error' }}">{{ ucfirst($module['status']) }}</span>
@@ -350,15 +342,6 @@
                                                 <div class="flex flex-wrap justify-end gap-2">
                                                     @if($serviceModuleTableReady && !empty($module['id']))
                                                     <a href="{{ route('admin.service.modules', ['edit' => $module['id']]) }}#service-module-form" class="btn btn-primary btn-xs">Edit</a>
-                                                    <form method="POST" action="{{ route('admin.service.modules.toggle', $module['id']) }}">
-                                                        @csrf
-                                                        <button type="submit" class="btn btn-warning btn-xs">Toggle</button>
-                                                    </form>
-                                                    <form method="POST" action="{{ route('admin.service.modules.destroy', $module['id']) }}" onsubmit="return confirm('Delete this service module?');">
-                                                        @csrf
-                                                        @method('DELETE')
-                                                        <button type="submit" class="btn btn-error btn-xs text-white">Delete</button>
-                                                    </form>
                                                     @else
                                                     <span class="text-xs text-base-content/60">Read only</span>
                                                     @endif
@@ -375,6 +358,258 @@
                             </div>
                         </div>
                     </div>
+                </div>
+                @elseif(isset($rechargeBlockLists))
+                @php
+                $rechargeBlockTableReady = $rechargeBlockListSchemaReady ?? true;
+                @endphp
+                <div class="p-6 space-y-6">
+                    <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <h1 class="text-3xl font-bold">Block list</h1>
+                            <p class="text-sm text-base-content/70">Blocked recharge amounts add korle oi service/operator amount ar request kora jabe na.</p>
+                        </div>
+                        <div class="stats shadow bg-base-100">
+                            <div class="stat py-4 px-5">
+                                <div class="stat-title text-xs">Total Blocked</div>
+                                <div class="stat-value text-primary text-2xl">{{ $rechargeBlockLists->count() }}</div>
+                            </div>
+                            <div class="stat py-4 px-5 border-l border-base-200">
+                                <div class="stat-title text-xs">Flexiload</div>
+                                <div class="stat-value text-secondary text-2xl">{{ $rechargeBlockLists->where('service', 'Flexiload')->count() }}</div>
+                            </div>
+                            <div class="stat py-4 px-5 border-l border-base-200">
+                                <div class="stat-title text-xs">InternetPack</div>
+                                <div class="stat-value text-accent text-2xl">{{ $rechargeBlockLists->where('service', 'InternetPack')->count() }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    @unless($rechargeBlockTableReady)
+                    <div class="alert alert-warning">
+                        <span>Recharge Block List table ready noy. Full feature use korte <code>php artisan migrate</code> run korun.</span>
+                    </div>
+                    @endunless
+
+                    @if($rechargeBlockTableReady)
+                    <div class="card bg-base-100 shadow-xl">
+                        <div class="card-body space-y-4">
+                            <div>
+                                <h2 class="card-title text-2xl">Add block item</h2>
+                                <p class="text-sm text-base-content/70">Service, operator ar amount select kore blocked list-e add korun.</p>
+                            </div>
+
+                            <form method="POST" action="{{ route('admin.recharge.block.list.store') }}" class="grid gap-4 md:grid-cols-4">
+                                @csrf
+                                <div class="form-control">
+                                    <label class="label"><span class="label-text">Service</span></label>
+                                    <select name="service" class="select select-bordered" required>
+                                        <option value="" disabled {{ old('service') ? '' : 'selected' }}>Select service</option>
+                                        @foreach($rechargeBlockServiceOptions as $value => $label)
+                                        <option value="{{ $value }}" {{ old('service') === $value ? 'selected' : '' }}>{{ $label }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <div class="form-control">
+                                    <label class="label"><span class="label-text">operator</span></label>
+                                    <select name="operator" class="select select-bordered" required>
+                                        <option value="" disabled {{ old('operator') ? '' : 'selected' }}>Select operator</option>
+                                        @foreach($rechargeBlockOperatorOptions as $value => $label)
+                                        <option value="{{ $value }}" {{ old('operator') === $value ? 'selected' : '' }}>{{ $value }} - {{ $label }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <div class="form-control">
+                                    <label class="label"><span class="label-text">Amount</span></label>
+                                    <input type="number" step="0.01" min="0.01" name="amount" value="{{ old('amount') }}" class="input input-bordered" placeholder="298" required />
+                                </div>
+                                <div class="form-control justify-end">
+                                    <label class="label opacity-0"><span class="label-text">Action</span></label>
+                                    <button type="submit" class="btn btn-primary w-full">Add</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    @endif
+
+                    <div class="card bg-base-100 shadow-xl">
+                        <div class="card-body">
+                            <div class="overflow-x-auto">
+                                <table class="table table-zebra w-full text-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Nr.</th>
+                                            <th>Service</th>
+                                            <th>operator</th>
+                                            <th>Amount</th>
+                                            <th class="text-right">Operation</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @forelse($rechargeBlockLists as $blockItem)
+                                        <tr>
+                                            <td>{{ $loop->iteration }}</td>
+                                            <td><span class="font-semibold">{{ $blockItem->service }}</span></td>
+                                            <td><span class="badge badge-outline">{{ $blockItem->operator }}</span></td>
+                                            <td>৳{{ number_format((float) $blockItem->amount, 2) }}</td>
+                                            <td>
+                                                <div class="flex justify-end">
+                                                    @if($rechargeBlockTableReady)
+                                                    <form method="POST" action="{{ route('admin.recharge.block.list.destroy', $blockItem->id) }}" onsubmit="return confirm('Delete this blocked recharge amount?');">
+                                                        @csrf
+                                                        @method('DELETE')
+                                                        <button type="submit" class="btn btn-error btn-xs">Delete</button>
+                                                    </form>
+                                                    @else
+                                                    <span class="text-xs text-base-content/60">Read only</span>
+                                                    @endif
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        @empty
+                                        <tr>
+                                            <td colspan="5" class="text-center text-base-content/60">No blocked recharge amount added yet.</td>
+                                        </tr>
+                                        @endforelse
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                @elseif(isset($securitySettings))
+                @php
+                $securitySettingsTableReady = $securitySettingsSchemaReady ?? true;
+                $operatorFields = [
+                'security_gp',
+                'security_robi',
+                'security_banglalink',
+                'security_airtel',
+                'security_teletalk',
+                'security_skitto',
+                ];
+                $operatorsOffCount = collect($operatorFields)->filter(fn ($field) => ($securitySettings[$field] ?? 'off') === 'off')->count();
+                $balanceToolsOnCount = collect([
+                'security_bank_balance',
+                'security_drive_balance',
+                'security_balance_transfer',
+                ])->filter(fn ($field) => ($securitySettings[$field] ?? 'off') === 'on')->count();
+                $securitySections = [
+                [
+                'title' => 'Access & Login',
+                'description' => 'SSL redirect, capcha, password ar session related controls.',
+                'fields' => [
+                ['name' => 'security_ssl_https_redirect', 'label' => 'SSL/HTTPS Redirect', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
+                ['name' => 'security_admin_login_captcha', 'label' => 'Admin login capcha', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
+                ['name' => 'security_reseller_login_captcha', 'label' => 'Reseller login capcha', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
+                ['name' => 'security_pin_expire_days', 'label' => 'PIN Expire (days)', 'type' => 'number', 'min' => 0],
+                ['name' => 'security_password_expire_days', 'label' => 'Password Expire (days)', 'type' => 'number', 'min' => 0],
+                ['name' => 'security_password_strong', 'label' => 'Password Strong', 'type' => 'select', 'options' => $securitySettingOptions['yes_no']],
+                ['name' => 'security_minimum_pin_length', 'label' => 'Minimum PIN Length', 'type' => 'number', 'min' => 1],
+                ['name' => 'security_request_interval_minutes', 'label' => 'Request Interval (Minutes)', 'type' => 'number', 'min' => 0],
+                ['name' => 'security_session_timeout_minutes', 'label' => 'Session Time Logout (Minutes)', 'type' => 'number', 'min' => 1],
+                ],
+                ],
+                [
+                'title' => 'Messaging & Limits',
+                'description' => 'Support ticket, OTP channel, modem ar limit settings.',
+                'fields' => [
+                ['name' => 'security_support_ticket', 'label' => 'Enable support ticket', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
+                ['name' => 'security_send_otp_via', 'label' => 'Send OTP Via', 'type' => 'select', 'options' => $securitySettingOptions['delivery_channels']],
+                ['name' => 'security_send_alert_via', 'label' => 'Send Alert Via', 'type' => 'select', 'options' => $securitySettingOptions['delivery_channels']],
+                ['name' => 'security_send_offline_sms_via', 'label' => 'Send offline sms Via', 'type' => 'select', 'options' => $securitySettingOptions['delivery_channels']],
+                ['name' => 'security_bulk_flexi_limit', 'label' => 'Bulk Flexi Limit', 'type' => 'number', 'min' => 0],
+                ['name' => 'security_auto_sending_limit', 'label' => 'Auto Sending Limit', 'type' => 'number', 'min' => 0],
+                ['name' => 'security_reseller_overpayment_limit', 'label' => 'Reseller OverPayment Limit', 'type' => 'select', 'options' => $securitySettingOptions['yes_no']],
+                ['name' => 'security_modem', 'label' => 'Modem', 'type' => 'select', 'options' => $securitySettingOptions['modems']],
+                ['name' => 'security_daily_limit', 'label' => 'Dayli Limit', 'type' => 'number', 'min' => 0],
+                ],
+                ],
+                [
+                'title' => 'Operator & Balance Control',
+                'description' => 'Operator off/on, popup notice, balance tools ar commission settings.',
+                'fields' => [
+                ['name' => 'security_gp', 'label' => 'GP', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_robi', 'label' => 'ROBI', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_banglalink', 'label' => 'Banglalink', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_airtel', 'label' => 'Airtel', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_teletalk', 'label' => 'Teletalk', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_skitto', 'label' => 'Skitto', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_popup_notice', 'label' => 'Popup Notice', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_sms_sent_system', 'label' => 'Sms Sent System', 'type' => 'select', 'options' => $securitySettingOptions['sms_sent_systems']],
+                ['name' => 'security_bank_balance', 'label' => 'Bank Balance', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_drive_balance', 'label' => 'Drive Balance', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_balance_transfer', 'label' => 'Balance Transfer', 'type' => 'select', 'options' => $securitySettingOptions['on_off']],
+                ['name' => 'security_commission_system', 'label' => 'Comission system', 'type' => 'select', 'options' => $securitySettingOptions['commission_systems']],
+                ],
+                ],
+                ];
+                @endphp
+                <div class="p-6 space-y-6">
+                    <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <h1 class="text-3xl font-bold">Security Modual</h1>
+                            <p class="text-sm text-base-content/70">Login, messaging, operator ar balance related security controls ekhan theke manage korte parben.</p>
+                        </div>
+                        <div class="stats shadow bg-base-100">
+                            <div class="stat py-4 px-5">
+                                <div class="stat-title text-xs">Configured Options</div>
+                                <div class="stat-value text-primary text-2xl">{{ count($securitySettings) }}</div>
+                            </div>
+                            <div class="stat py-4 px-5 border-l border-base-200">
+                                <div class="stat-title text-xs">Operators OFF</div>
+                                <div class="stat-value text-warning text-2xl">{{ $operatorsOffCount }}</div>
+                            </div>
+                            <div class="stat py-4 px-5 border-l border-base-200">
+                                <div class="stat-title text-xs">Balance Tools ON</div>
+                                <div class="stat-value text-success text-2xl">{{ $balanceToolsOnCount }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    @unless($securitySettingsTableReady)
+                    <div class="alert alert-warning">
+                        <span>Security Modual settings columns ready noy. Full save feature use korte <code>php artisan migrate</code> run korun.</span>
+                    </div>
+                    @endunless
+
+                    <form method="POST" action="{{ route('admin.security.modual.update') }}" class="space-y-6">
+                        @csrf
+                        <fieldset class="space-y-6" {{ $securitySettingsTableReady ? '' : 'disabled' }}>
+                            <div class="grid gap-6 xl:grid-cols-3">
+                                @foreach($securitySections as $section)
+                                <div class="card bg-base-100 shadow-xl">
+                                    <div class="card-body space-y-4">
+                                        <div>
+                                            <h2 class="card-title text-2xl">{{ $section['title'] }}</h2>
+                                            <p class="text-sm text-base-content/70">{{ $section['description'] }}</p>
+                                        </div>
+                                        <div class="grid gap-4 md:grid-cols-2">
+                                            @foreach($section['fields'] as $field)
+                                            <div class="form-control">
+                                                <label class="label"><span class="label-text">{{ $field['label'] }}</span></label>
+                                                @if($field['type'] === 'select')
+                                                <select name="{{ $field['name'] }}" class="select select-bordered w-full" required>
+                                                    @foreach($field['options'] as $optionValue => $optionLabel)
+                                                    <option value="{{ $optionValue }}" {{ old($field['name'], $securitySettings[$field['name']] ?? null) === $optionValue ? 'selected' : '' }}>{{ $optionLabel }}</option>
+                                                    @endforeach
+                                                </select>
+                                                @else
+                                                <input type="number" name="{{ $field['name'] }}" min="{{ $field['min'] ?? 0 }}" class="input input-bordered w-full" value="{{ old($field['name'], $securitySettings[$field['name']] ?? '') }}" required />
+                                                @endif
+                                            </div>
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                </div>
+                                @endforeach
+                            </div>
+
+                            <div class="flex justify-end">
+                                <button type="submit" class="btn btn-primary btn-wide">Save Changes</button>
+                            </div>
+                        </fieldset>
+                    </form>
                 </div>
                 @elseif(isset($history))
                 <div class="p-6">
@@ -1370,7 +1605,7 @@
                         </a>
                     </li>
                     <li>
-                        <details>
+                        <details {{ request()->routeIs('admin.daily.reports') || request()->routeIs('admin.operator.reports') || request()->routeIs('admin.sales.report') ? 'open' : '' }}>
                             <summary>
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -1380,17 +1615,17 @@
                             <ul>
                                 <li><a>Receive reports</a></li>
                                 <li><a>Balance Reports</a></li>
-                                <li><a>Operator Reports</a></li>
-                                <li><a>Daily Reports</a></li>
+                                <li><a href="{{ route('admin.operator.reports') }}" class="{{ request()->routeIs('admin.operator.reports') ? 'active bg-primary text-primary-content' : '' }}">Operator Reports</a></li>
+                                <li><a href="{{ route('admin.daily.reports') }}" class="{{ request()->routeIs('admin.daily.reports') ? 'active bg-primary text-primary-content' : '' }}">Daily Reports</a></li>
                                 <li><a>Total usages</a></li>
                                 <li><a>Transaction</a></li>
                                 <li><a>Trnx ID</a></li>
-                                <li><a>Sales Report</a></li>
+                                <li><a href="{{ route('admin.sales.report') }}" class="{{ request()->routeIs('admin.sales.report') ? 'active bg-primary text-primary-content' : '' }}">Sales Report</a></li>
                             </ul>
                         </details>
                     </li>
                     <li>
-                        <details {{ request()->routeIs('admin.service.modules') ? 'open' : '' }}>
+                        <details {{ request()->routeIs('admin.service.modules') || request()->routeIs('admin.recharge.block.list*') || request()->routeIs('admin.security.modual*') ? 'open' : '' }}>
                             <summary>
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -1407,14 +1642,22 @@
                                 <li><a>Deposit</a></li>
                                 <li><a>Modem List</a></li>
                                 <li><a>Modem Device</a></li>
-                                <li><a>Recharge Block List</a></li>
+                                <li>
+                                    <a href="{{ route('admin.recharge.block.list') }}" class="{{ request()->routeIs('admin.recharge.block.list*') ? 'active' : '' }}">
+                                        Recharge Block List
+                                    </a>
+                                </li>
                                 <li>
                                     <a href="{{ route('api.index') }}" class="{{ request()->is('api-settings') ? 'active' : '' }}">
                                         Api Settings
                                     </a>
                                 </li>
                                 <li><a href="{{ route('admin.payment.gateway') }}">Payment Gateway</a></li>
-                                <li><a>Security Settings</a></li>
+                                <li>
+                                    <a href="{{ route('admin.security.modual') }}" class="{{ request()->routeIs('admin.security.modual*') ? 'active' : '' }}">
+                                        Security Modual
+                                    </a>
+                                </li>
                                 @if($canManageResellers)
                                 <li><a href="{{ route('admin.deleted.accounts') }}">Deleted Accounts</a></li>
                                 @endif

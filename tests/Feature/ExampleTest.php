@@ -33,6 +33,7 @@ class ExampleTest extends TestCase
         Schema::dropIfExists('apis');
         Schema::dropIfExists('api_domains');
         Schema::dropIfExists('service_modules');
+        Schema::dropIfExists('recharge_block_lists');
         Schema::dropIfExists('otps');
         Schema::dropIfExists('users');
 
@@ -42,7 +43,9 @@ class ExampleTest extends TestCase
             $table->string('email')->unique();
             $table->string('username')->nullable();
             $table->string('password');
+            $table->timestamp('password_changed_at')->nullable();
             $table->string('pin')->nullable();
+            $table->timestamp('pin_changed_at')->nullable();
             $table->boolean('is_admin')->default(false);
             $table->boolean('is_first_admin')->default(false);
             $table->boolean('is_active')->default(true);
@@ -125,6 +128,36 @@ class ExampleTest extends TestCase
             $table->longText('firebase_service_account_json')->nullable();
             $table->boolean('google_otp_enabled')->default(false);
             $table->string('google_otp_issuer')->nullable();
+            $table->string('security_ssl_https_redirect')->default('disable');
+            $table->string('security_admin_login_captcha')->default('disable');
+            $table->string('security_reseller_login_captcha')->default('disable');
+            $table->unsignedInteger('security_pin_expire_days')->default(100);
+            $table->unsignedInteger('security_password_expire_days')->default(100);
+            $table->string('security_password_strong')->default('yes');
+            $table->unsignedInteger('security_minimum_pin_length')->default(4);
+            $table->unsignedInteger('security_request_interval_minutes')->default(1);
+            $table->unsignedInteger('security_session_timeout_minutes')->default(20000);
+            $table->string('security_support_ticket')->default('enable');
+            $table->string('security_send_otp_via')->default('sms_modem');
+            $table->string('security_send_alert_via')->default('sms_modem');
+            $table->string('security_send_offline_sms_via')->default('sms_modem');
+            $table->unsignedInteger('security_bulk_flexi_limit')->default(1000);
+            $table->unsignedInteger('security_auto_sending_limit')->default(999);
+            $table->string('security_reseller_overpayment_limit')->default('no');
+            $table->string('security_modem')->default('modem_v1');
+            $table->unsignedBigInteger('security_daily_limit')->default(5000000);
+            $table->string('security_gp')->default('off');
+            $table->string('security_robi')->default('off');
+            $table->string('security_banglalink')->default('off');
+            $table->string('security_airtel')->default('off');
+            $table->string('security_teletalk')->default('off');
+            $table->string('security_skitto')->default('off');
+            $table->string('security_popup_notice')->default('on');
+            $table->string('security_sms_sent_system')->default('only_offline');
+            $table->string('security_bank_balance')->default('on');
+            $table->string('security_drive_balance')->default('off');
+            $table->string('security_balance_transfer')->default('on');
+            $table->string('security_commission_system')->default('all_level');
             $table->timestamps();
         });
 
@@ -186,6 +219,21 @@ class ExampleTest extends TestCase
 
         $response->assertOk();
         $response->assertSee('Admin notice from database');
+    }
+
+    public function test_popup_notice_setting_hides_notice_when_disabled(): void
+    {
+        $this->setSecuritySettings(['security_popup_notice' => 'off']);
+
+        DB::table('site_notices')->insert([
+            'notice_text' => 'Hidden popup notice',
+        ]);
+
+        $response = $this->withSession(['login_notice' => 'Hidden session notice'])->get('/');
+
+        $response->assertOk();
+        $response->assertDontSee('Hidden popup notice');
+        $response->assertDontSee('Hidden session notice');
     }
 
     public function test_homepage_shows_fallback_operators_when_database_is_empty(): void
@@ -2351,6 +2399,47 @@ class ExampleTest extends TestCase
         $this->assertGuest();
     }
 
+    public function test_user_login_requires_valid_security_captcha_when_enabled(): void
+    {
+        $this->setSecuritySettings(['security_reseller_login_captcha' => 'enable']);
+
+        $user = $this->createLoginUser(1051, [
+            'name' => 'Captcha User',
+            'email' => 'captcha-user@example.com',
+        ]);
+
+        $loginPage = $this->get('/login');
+        $captchaQuestion = app('session.store')->get('security.login_captcha.reseller.question');
+        $captchaAnswer = app('session.store')->get('security.login_captcha.reseller.answer');
+
+        $loginPage->assertOk();
+        $loginPage->assertSee($captchaQuestion);
+
+        $this->from('/login')
+            ->post('/login', [
+                'email' => $user->email,
+                'password' => 'secret123',
+                'pin' => '1234',
+                'captcha' => '999',
+            ])
+            ->assertRedirect('/login')
+            ->assertSessionHasErrors(['captcha']);
+
+        $this->assertGuest();
+
+        $this->get('/login');
+        $captchaAnswer = app('session.store')->get('security.login_captcha.reseller.answer');
+
+        $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'secret123',
+            'pin' => '1234',
+            'captcha' => $captchaAnswer,
+        ])->assertRedirect('/dashboard');
+
+        $this->assertAuthenticatedAs($user);
+    }
+
     public function test_user_login_succeeds_after_valid_google_otp_on_second_step(): void
     {
         DB::table('homepage_settings')->insert([
@@ -2432,6 +2521,47 @@ class ExampleTest extends TestCase
             ->assertRedirect(route('admin.login.otp.show'));
 
         $this->assertGuest();
+    }
+
+    public function test_admin_login_requires_valid_security_captcha_when_enabled(): void
+    {
+        $this->setSecuritySettings(['security_admin_login_captcha' => 'enable']);
+
+        $admin = $this->createLoginUser(12081, [
+            'name' => 'Captcha Admin',
+            'email' => 'captcha-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $loginPage = $this->get('/admin/login');
+        $captchaQuestion = app('session.store')->get('security.login_captcha.admin.question');
+
+        $loginPage->assertOk();
+        $loginPage->assertSee($captchaQuestion);
+
+        $this->from('/admin/login')
+            ->post('/admin/login', [
+                'email' => $admin->email,
+                'password' => 'secret123',
+                'pin' => '1234',
+                'captcha' => '999',
+            ])
+            ->assertRedirect('/admin/login')
+            ->assertSessionHasErrors(['captcha']);
+
+        $this->assertGuest();
+
+        $this->get('/admin/login');
+        $captchaAnswer = app('session.store')->get('security.login_captcha.admin.answer');
+
+        $this->post('/admin/login', [
+            'email' => $admin->email,
+            'password' => 'secret123',
+            'pin' => '1234',
+            'captcha' => $captchaAnswer,
+        ])->assertRedirect(route('admin.dashboard'));
+
+        $this->assertAuthenticatedAs($admin);
     }
 
     public function test_admin_login_succeeds_after_valid_google_otp_on_second_step(): void
@@ -6978,11 +7108,9 @@ class ExampleTest extends TestCase
         $response->assertSee('BPO');
         $response->assertSee(route('admin.service.modules'), false);
         $response->assertSee(route('admin.service.modules', ['edit' => $flexiloadId]), false);
-        $response->assertSee(route('admin.service.modules.toggle', $flexiloadId), false);
-        $response->assertSee(route('admin.service.modules.sort', $flexiloadId), false);
         $response->assertSee('Edit');
-        $response->assertSee('Toggle');
-        $response->assertSee('Delete');
+        $response->assertDontSee('Toggle');
+        $response->assertDontSee('>Save<', false);
     }
 
     public function test_admin_can_create_service_module_from_service_modules_page(): void
@@ -7067,53 +7195,1418 @@ class ExampleTest extends TestCase
         $this->assertEquals(1999.0, (float) $updatedModule->maximum_amount);
     }
 
-    public function test_admin_can_toggle_and_sort_service_module_from_service_modules_page(): void
+    public function test_admin_recharge_block_list_page_renders_database_backed_rows(): void
     {
-        $this->seedServiceModulesTable();
+        $this->ensureRechargeBlockListsTable();
 
-        $admin = $this->createLoginUser(231, [
-            'name' => 'Service Module Operator',
-            'email' => 'service-module-operator@example.com',
+        DB::table('recharge_block_lists')->insert([
+            [
+                'service' => 'InternetPack',
+                'operator' => 'AT',
+                'amount' => 298,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'service' => 'Flexiload',
+                'operator' => 'AT',
+                'amount' => 298,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $admin = $this->createLoginUser(320, [
+            'name' => 'Recharge Block Admin',
+            'email' => 'recharge-block-admin@example.com',
             'is_admin' => true,
         ]);
 
-        $moduleId = DB::table('service_modules')->where('title', 'SMS')->value('id');
+        $response = $this->actingAs($admin)->get(route('admin.recharge.block.list'));
 
-        $toggleResponse = $this->actingAs($admin)
-            ->post(route('admin.service.modules.toggle', $moduleId));
-
-        $toggleResponse->assertRedirect(route('admin.service.modules'));
-        $toggleResponse->assertSessionHas('success', 'Service module status updated successfully.');
-        $this->assertSame('deactive', DB::table('service_modules')->where('id', $moduleId)->value('status'));
-
-        $sortResponse = $this->actingAs($admin)
-            ->post(route('admin.service.modules.sort', $moduleId), [
-                'sort_order' => 22,
-            ]);
-
-        $sortResponse->assertRedirect(route('admin.service.modules'));
-        $sortResponse->assertSessionHas('success', 'Service module sort order updated successfully.');
-        $this->assertSame(22, (int) DB::table('service_modules')->where('id', $moduleId)->value('sort_order'));
+        $response->assertOk();
+        $response->assertSee('Block list');
+        $response->assertSee('InternetPack');
+        $response->assertSee('Flexiload');
+        $response->assertSee('AT');
+        $response->assertSee('298.00');
+        $response->assertSee(route('admin.recharge.block.list'), false);
+        $response->assertSee('Delete');
     }
 
-    public function test_admin_can_delete_service_module_from_service_modules_page(): void
+    public function test_admin_can_create_and_delete_recharge_block_list_entry(): void
     {
-        $this->seedServiceModulesTable();
+        $this->ensureRechargeBlockListsTable();
 
-        $admin = $this->createLoginUser(232, [
-            'name' => 'Service Module Deleter',
-            'email' => 'service-module-deleter@example.com',
+        $admin = $this->createLoginUser(321, [
+            'name' => 'Recharge Block Creator',
+            'email' => 'recharge-block-creator@example.com',
             'is_admin' => true,
         ]);
 
-        $moduleId = DB::table('service_modules')->where('title', 'BPO')->value('id');
+        $createResponse = $this->actingAs($admin)
+            ->from(route('admin.recharge.block.list'))
+            ->post(route('admin.recharge.block.list.store'), [
+                'service' => 'Flexiload',
+                'operator' => 'AT',
+                'amount' => 298,
+            ]);
+
+        $createResponse->assertRedirect(route('admin.recharge.block.list'));
+        $createResponse->assertSessionHas('success', 'Recharge block entry created successfully.');
+
+        $this->assertDatabaseHas('recharge_block_lists', [
+            'service' => 'Flexiload',
+            'operator' => 'AT',
+            'amount' => 298.00,
+        ]);
+
+        $entryId = DB::table('recharge_block_lists')->where('service', 'Flexiload')->value('id');
+
+        $deleteResponse = $this->actingAs($admin)
+            ->delete(route('admin.recharge.block.list.destroy', $entryId));
+
+        $deleteResponse->assertRedirect(route('admin.recharge.block.list'));
+        $deleteResponse->assertSessionHas('success', 'Recharge block entry deleted successfully.');
+
+        $this->assertDatabaseMissing('recharge_block_lists', [
+            'id' => $entryId,
+        ]);
+    }
+
+    public function test_admin_security_modual_page_renders_requested_controls(): void
+    {
+        $admin = $this->createLoginUser(322, [
+            'name' => 'Security Modual Admin',
+            'email' => 'security-modual-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.security.modual'));
+
+        $response->assertOk();
+        $response->assertSee('Security Modual');
+        $response->assertSee('SSL/HTTPS Redirect');
+        $response->assertSee('Admin login capcha');
+        $response->assertSee('Reseller login capcha');
+        $response->assertSee('Send offline sms Via');
+        $response->assertSee('Comission system');
+        $response->assertSee('Save Changes');
+        $response->assertSee(route('admin.security.modual.update'), false);
+    }
+
+    public function test_admin_daily_reports_page_renders_requested_design_cards(): void
+    {
+        $admin = $this->createLoginUser(3221, [
+            'name' => 'Daily Reports Admin',
+            'email' => 'daily-reports-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.daily.reports', ['date' => '2026-03-09']));
+
+        $response->assertOk();
+        $response->assertSee('Daily Reports');
+        $response->assertSee('Date');
+        $response->assertSee('2026-03-09');
+        $response->assertSee('Filter');
+        $response->assertSee('Flexiload');
+        $response->assertSee('InternetPack');
+        $response->assertSee('Sonali Bank Limited');
+        $response->assertSee('GlobalFlexi');
+        $response->assertSee('BillPay2');
+        $response->assertSee('BPO');
+        $response->assertSee('0.00');
+    }
+
+    public function test_admin_sales_report_page_applies_backend_totals_and_filters(): void
+    {
+        $this->ensureFlexiRequestsTable();
+        $this->ensureProviderApiInternetTables();
+
+        $admin = $this->createLoginUser(3225, [
+            'name' => 'Sales Reports Admin',
+            'email' => 'sales-reports-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $seller = $this->createLoginUser(3226, [
+            'name' => 'Sales Report Seller',
+            'email' => 'sales-report-seller@example.com',
+            'main_bal' => 1000,
+        ]);
+
+        DB::table('apis')->insert([
+            'id' => 501,
+            'title' => 'Forward Gateway',
+            'user_id' => (string) $seller->id,
+            'provider' => 'RouteSim',
+            'api_key' => 'route-sim-key',
+            'api_url' => 'https://route-sim.test/api',
+            'status' => 'active',
+            'balance' => 0,
+            'main_balance' => 0,
+            'drive_balance' => 0,
+            'bank_balance' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('regular_packages')->insert([
+            'id' => 901,
+            'operator' => 'Robi',
+            'name' => 'Route Pack',
+            'price' => 300,
+            'commission' => 0,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 300,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('flexi_requests')->insert([
+            [
+                'user_id' => $seller->id,
+                'operator' => 'GP',
+                'mobile' => '01711111111',
+                'amount' => 120,
+                'cost' => 110,
+                'type' => 'Prepaid',
+                'trnx_id' => 'SR-FX-1',
+                'status' => 'approved',
+                'is_routed' => true,
+                'route_api_id' => 501,
+                'source_client_domain' => 'alpha-route.test',
+                'created_at' => '2026-01-10 10:15:00',
+                'updated_at' => '2026-01-10 10:15:00',
+            ],
+            [
+                'user_id' => $seller->id,
+                'operator' => 'Robi',
+                'mobile' => '01811111111',
+                'amount' => 80,
+                'cost' => 75,
+                'type' => 'Prepaid',
+                'trnx_id' => 'SR-FX-2',
+                'status' => 'approved',
+                'is_routed' => false,
+                'route_api_id' => null,
+                'source_client_domain' => null,
+                'created_at' => '2026-01-11 11:30:00',
+                'updated_at' => '2026-01-11 11:30:00',
+            ],
+            [
+                'user_id' => $seller->id,
+                'operator' => 'Banglalink',
+                'mobile' => '01911111111',
+                'amount' => 999,
+                'cost' => 990,
+                'type' => 'Prepaid',
+                'trnx_id' => 'SR-FX-3',
+                'status' => 'approved',
+                'is_routed' => true,
+                'route_api_id' => 501,
+                'source_client_domain' => 'alpha-route.test',
+                'created_at' => '2026-02-05 09:00:00',
+                'updated_at' => '2026-02-05 09:00:00',
+            ],
+            [
+                'user_id' => $seller->id,
+                'operator' => 'Airtel',
+                'mobile' => '01611111111',
+                'amount' => 777,
+                'cost' => 760,
+                'type' => 'Prepaid',
+                'trnx_id' => 'SR-FX-4',
+                'status' => 'pending',
+                'is_routed' => true,
+                'route_api_id' => 501,
+                'source_client_domain' => 'alpha-route.test',
+                'created_at' => '2026-01-13 08:00:00',
+                'updated_at' => '2026-01-13 08:00:00',
+            ],
+        ]);
+
+        DB::table('regular_requests')->insert([
+            [
+                'user_id' => $seller->id,
+                'package_id' => 901,
+                'operator' => 'Robi',
+                'mobile' => '01822222222',
+                'amount' => 300,
+                'status' => 'approved',
+                'balance_type' => 'main_bal',
+                'description' => 'Route Pack',
+                'is_routed' => true,
+                'route_api_id' => 501,
+                'source_client_domain' => 'alpha-route.test',
+                'created_at' => '2026-01-12 09:45:00',
+                'updated_at' => '2026-01-12 09:45:00',
+            ],
+            [
+                'user_id' => $seller->id,
+                'package_id' => 901,
+                'operator' => 'Robi',
+                'mobile' => '01833333333',
+                'amount' => 500,
+                'status' => 'approved',
+                'balance_type' => 'main_bal',
+                'description' => 'Route Pack',
+                'is_routed' => true,
+                'route_api_id' => 501,
+                'source_client_domain' => 'alpha-route.test',
+                'created_at' => '2026-02-12 09:45:00',
+                'updated_at' => '2026-02-12 09:45:00',
+            ],
+            [
+                'user_id' => $seller->id,
+                'package_id' => 901,
+                'operator' => 'Robi',
+                'mobile' => '01844444444',
+                'amount' => 400,
+                'status' => 'pending',
+                'balance_type' => 'main_bal',
+                'description' => 'Route Pack',
+                'is_routed' => true,
+                'route_api_id' => 501,
+                'source_client_domain' => 'alpha-route.test',
+                'created_at' => '2026-01-14 09:45:00',
+                'updated_at' => '2026-01-14 09:45:00',
+            ],
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.sales.report', [
+            'date_from' => '2026-01-01',
+            'date_to' => '2026-01-31',
+        ]));
+
+        $response->assertOk();
+        $response->assertSee('Route Report');
+        $response->assertSee('Module:');
+        $response->assertSee('Sim To');
+        $response->assertSee('Date From');
+        $response->assertSee('Date To');
+        $response->assertSee('Total Summary');
+        $response->assertSee('Flexiload');
+        $response->assertSee('200.00');
+        $response->assertSee('( NUM QTY : 2 )');
+        $response->assertSee('InternetPack');
+        $response->assertSee('300.00');
+        $response->assertSee('( NUM QTY : 1 )');
+        $response->assertSee('500.0');
+        $response->assertSee(route('admin.sales.report'), false);
+
+        $filteredBySimTo = $this->actingAs($admin)->get(route('admin.sales.report', [
+            'sim_to' => 'RouteSim',
+            'date_from' => '2026-01-01',
+            'date_to' => '2026-01-31',
+        ]));
+
+        $filteredBySimTo->assertOk();
+        $filteredBySimTo->assertSee('Flexiload');
+        $filteredBySimTo->assertSee('120.00');
+        $filteredBySimTo->assertDontSee('200.00');
+        $filteredBySimTo->assertSee('InternetPack');
+        $filteredBySimTo->assertSee('300.00');
+        $filteredBySimTo->assertSee('420.0');
+
+        $filteredByModule = $this->actingAs($admin)->get(route('admin.sales.report', [
+            'module' => 'internet_pack',
+            'sim_to' => 'RouteSim',
+            'date_from' => '2026-01-01',
+            'date_to' => '2026-01-31',
+        ]));
+
+        $filteredByModule->assertOk();
+        $filteredByModule->assertDontSee('Flexiload');
+        $filteredByModule->assertSee('InternetPack');
+        $filteredByModule->assertSee('300.00');
+        $filteredByModule->assertSee('( NUM QTY : 1 )');
+        $filteredByModule->assertSee('300.0');
+        $filteredByModule->assertSee('value="internet_pack" selected', false);
+        $filteredByModule->assertSee('value="RouteSim"', false);
+    }
+
+    public function test_admin_operator_reports_page_renders_requested_table_and_applies_filters(): void
+    {
+        if (! Schema::hasColumn('users', 'main_bal')) {
+            Schema::table('users', function (Blueprint $table) {
+                $table->decimal('main_bal', 15, 2)->default(0);
+            });
+        }
+
+        $this->ensureFlexiRequestsTable();
+
+        if (! Schema::hasTable('recharge_history')) {
+            Schema::create('recharge_history', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('user_id');
+                $table->string('type')->nullable();
+                $table->decimal('amount', 10, 2)->default(0);
+                $table->timestamps();
+            });
+        }
+
+        $admin = $this->createLoginUser(3222, [
+            'name' => 'Operator Reports Admin',
+            'email' => 'operator-reports-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $sellerA = $this->createLoginUser(3223, [
+            'name' => 'Operator Report Seller A',
+            'email' => 'operator-report-seller-a@example.com',
+            'main_bal' => 1000,
+        ]);
+
+        $sellerB = $this->createLoginUser(3224, [
+            'name' => 'Operator Report Seller B',
+            'email' => 'operator-report-seller-b@example.com',
+            'main_bal' => 1000,
+        ]);
+
+        DB::table('flexi_requests')->insert([
+            [
+                'user_id' => $sellerA->id,
+                'operator' => 'Grameenphone',
+                'mobile' => '01712345678',
+                'amount' => 100,
+                'cost' => 100,
+                'type' => 'Prepaid',
+                'status' => 'approved',
+                'created_at' => '2026-03-05 10:00:00',
+                'updated_at' => '2026-03-05 10:00:00',
+            ],
+            [
+                'user_id' => $sellerA->id,
+                'operator' => 'Airtel',
+                'mobile' => '01612345678',
+                'amount' => 30,
+                'cost' => 30,
+                'type' => 'Prepaid',
+                'status' => 'rejected',
+                'created_at' => '2026-03-06 10:00:00',
+                'updated_at' => '2026-03-06 10:00:00',
+            ],
+            [
+                'user_id' => $sellerB->id,
+                'operator' => 'Robi',
+                'mobile' => '01812345678',
+                'amount' => 50,
+                'cost' => 50,
+                'type' => 'Postpaid',
+                'status' => 'approved',
+                'created_at' => '2026-03-07 10:00:00',
+                'updated_at' => '2026-03-07 10:00:00',
+            ],
+            [
+                'user_id' => $sellerA->id,
+                'operator' => 'Banglalink',
+                'mobile' => '01912345678',
+                'amount' => 999,
+                'cost' => 999,
+                'type' => 'Prepaid',
+                'status' => 'approved',
+                'created_at' => '2025-11-30 10:00:00',
+                'updated_at' => '2025-11-30 10:00:00',
+            ],
+        ]);
+
+        DB::table('recharge_history')->insert([
+            [
+                'user_id' => $sellerA->id,
+                'type' => 'Bkash',
+                'amount' => 20,
+                'created_at' => '2026-03-04 10:00:00',
+                'updated_at' => '2026-03-04 10:00:00',
+            ],
+            [
+                'user_id' => $sellerA->id,
+                'type' => 'Rocket',
+                'amount' => 15,
+                'created_at' => '2026-03-03 10:00:00',
+                'updated_at' => '2026-03-03 10:00:00',
+            ],
+            [
+                'user_id' => $sellerA->id,
+                'type' => 'Internet Pack 1GB',
+                'amount' => 999,
+                'created_at' => '2026-03-02 10:00:00',
+                'updated_at' => '2026-03-02 10:00:00',
+            ],
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.operator.reports', [
+            'reseller' => (string) $sellerA->id,
+            'status' => 'success',
+            'date_from' => '2026-03-01',
+            'date_to' => '2026-03-09',
+        ]));
+
+        $response->assertOk();
+        $response->assertSee('Operator Report');
+        $response->assertSee('Operator');
+        $response->assertSee('Reseller');
+        $response->assertSee('Status');
+        $response->assertSee('Date From');
+        $response->assertSee('Date To');
+        $response->assertSee('GrameenPhone');
+        $response->assertSee('Bkash Personal');
+        $response->assertSee('DBBL');
+        $response->assertSee('100.00');
+        $response->assertSee('20.00');
+        $response->assertSee('15.00');
+        $response->assertSee('135.00');
+        $response->assertDontSee('1,149.00');
+
+        $filteredResponse = $this->actingAs($admin)->get(route('admin.operator.reports', [
+            'operator' => 'GrameenPhone',
+            'reseller' => (string) $sellerA->id,
+            'status' => 'success',
+            'date_from' => '2026-03-01',
+            'date_to' => '2026-03-09',
+        ]));
+
+        $filteredResponse->assertOk();
+        $filteredResponse->assertSee('value="GrameenPhone" selected', false);
+        $filteredResponse->assertSee('100.00');
+
+        preg_match('/<tbody[^>]*>([\s\S]*?)<\/tbody>/', $filteredResponse->getContent(), $matches);
+        $tbody = $matches[1] ?? '';
+
+        $this->assertStringContainsString('GrameenPhone', $tbody);
+        $this->assertStringNotContainsString('Robi', $tbody);
+        $this->assertStringNotContainsString('Bkash Personal', $tbody);
+    }
+
+    public function test_admin_can_update_security_modual_settings(): void
+    {
+        $admin = $this->createLoginUser(323, [
+            'name' => 'Security Modual Editor',
+            'email' => 'security-modual-editor@example.com',
+            'is_admin' => true,
+        ]);
 
         $response = $this->actingAs($admin)
-            ->delete(route('admin.service.modules.destroy', $moduleId));
+            ->from(route('admin.security.modual'))
+            ->post(route('admin.security.modual.update'), [
+                'security_ssl_https_redirect' => 'enable',
+                'security_admin_login_captcha' => 'enable',
+                'security_reseller_login_captcha' => 'disable',
+                'security_pin_expire_days' => 60,
+                'security_password_expire_days' => 45,
+                'security_password_strong' => 'yes',
+                'security_minimum_pin_length' => 6,
+                'security_request_interval_minutes' => 3,
+                'security_session_timeout_minutes' => 720,
+                'security_support_ticket' => 'disable',
+                'security_send_otp_via' => 'email',
+                'security_send_alert_via' => 'sms_api',
+                'security_send_offline_sms_via' => 'sms_modem',
+                'security_bulk_flexi_limit' => 1500,
+                'security_auto_sending_limit' => 1200,
+                'security_reseller_overpayment_limit' => 'yes',
+                'security_modem' => 'api_gateway',
+                'security_daily_limit' => 7500000,
+                'security_gp' => 'on',
+                'security_robi' => 'off',
+                'security_banglalink' => 'on',
+                'security_airtel' => 'off',
+                'security_teletalk' => 'on',
+                'security_skitto' => 'off',
+                'security_popup_notice' => 'off',
+                'security_sms_sent_system' => 'online_offline',
+                'security_bank_balance' => 'off',
+                'security_drive_balance' => 'on',
+                'security_balance_transfer' => 'off',
+                'security_commission_system' => 'single_level',
+            ]);
 
-        $response->assertRedirect(route('admin.service.modules'));
-        $response->assertSessionHas('success', 'Service module deleted successfully.');
-        $this->assertDatabaseMissing('service_modules', ['id' => $moduleId]);
+        $response->assertRedirect(route('admin.security.modual'));
+        $response->assertSessionHas('success', 'Security Modual settings updated successfully.');
+
+        $this->assertDatabaseHas('homepage_settings', [
+            'security_ssl_https_redirect' => 'enable',
+            'security_admin_login_captcha' => 'enable',
+            'security_reseller_login_captcha' => 'disable',
+            'security_pin_expire_days' => 60,
+            'security_password_expire_days' => 45,
+            'security_password_strong' => 'yes',
+            'security_minimum_pin_length' => 6,
+            'security_request_interval_minutes' => 3,
+            'security_session_timeout_minutes' => 720,
+            'security_support_ticket' => 'disable',
+            'security_send_otp_via' => 'email',
+            'security_send_alert_via' => 'sms_api',
+            'security_send_offline_sms_via' => 'sms_modem',
+            'security_bulk_flexi_limit' => 1500,
+            'security_auto_sending_limit' => 1200,
+            'security_reseller_overpayment_limit' => 'yes',
+            'security_modem' => 'api_gateway',
+            'security_daily_limit' => 7500000,
+            'security_gp' => 'on',
+            'security_robi' => 'off',
+            'security_banglalink' => 'on',
+            'security_airtel' => 'off',
+            'security_teletalk' => 'on',
+            'security_skitto' => 'off',
+            'security_popup_notice' => 'off',
+            'security_sms_sent_system' => 'online_offline',
+            'security_bank_balance' => 'off',
+            'security_drive_balance' => 'on',
+            'security_balance_transfer' => 'off',
+            'security_commission_system' => 'single_level',
+        ]);
+    }
+
+    public function test_admin_security_modual_page_stays_schema_safe_when_columns_are_missing(): void
+    {
+        Schema::dropIfExists('homepage_settings');
+
+        Schema::create('homepage_settings', function (Blueprint $table) {
+            $table->id();
+            $table->string('company_name')->nullable();
+            $table->string('company_logo_url')->nullable();
+            $table->string('footer_company_name')->nullable();
+            $table->text('footer_description')->nullable();
+            $table->string('firebase_api_key')->nullable();
+            $table->string('firebase_auth_domain')->nullable();
+            $table->string('firebase_project_id')->nullable();
+            $table->string('firebase_storage_bucket')->nullable();
+            $table->string('firebase_messaging_sender_id')->nullable();
+            $table->string('firebase_app_id')->nullable();
+            $table->text('firebase_vapid_key')->nullable();
+            $table->longText('firebase_service_account_json')->nullable();
+            $table->boolean('google_otp_enabled')->default(false);
+            $table->string('google_otp_issuer')->nullable();
+            $table->timestamps();
+        });
+
+        $admin = $this->createLoginUser(324, [
+            'name' => 'Security Schema Safe Admin',
+            'email' => 'security-schema-safe-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $pageResponse = $this->actingAs($admin)->get(route('admin.security.modual'));
+
+        $pageResponse->assertOk();
+        $pageResponse->assertSee('Security Modual');
+        $pageResponse->assertSee('Security Modual settings columns ready noy.');
+
+        $saveResponse = $this->actingAs($admin)
+            ->post(route('admin.security.modual.update'), []);
+
+        $saveResponse->assertRedirect(route('admin.security.modual'));
+        $saveResponse->assertSessionHas('error', 'Security Modual settings columns are not ready. Please run php artisan migrate.');
+    }
+
+    public function test_support_ticket_setting_blocks_complaints_page_and_submission(): void
+    {
+        $this->setSecuritySettings(['security_support_ticket' => 'disable']);
+
+        $user = $this->createLoginUser(325, [
+            'name' => 'Support Ticket Blocked User',
+            'email' => 'support-ticket-blocked-user@example.com',
+            'permissions' => ['complaints'],
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('complaints.index'))
+            ->assertRedirect(route('dashboard'))
+            ->assertSessionHas('error', 'Support ticket is currently disabled.');
+
+        $this->actingAs($user)
+            ->post(route('complaints.store'), [
+                'subject' => 'Need help',
+                'message' => 'Please enable support again.',
+            ])
+            ->assertRedirect(route('dashboard'))
+            ->assertSessionHas('error', 'Support ticket is currently disabled.');
+    }
+
+    public function test_password_strong_setting_rejects_weak_registration_password(): void
+    {
+        $this->ensureOtpsTable();
+        $this->setSecuritySettings(['security_password_strong' => 'yes']);
+
+        DB::table('otps')->insert([
+            'email' => 'weak-register@example.com',
+            'otp' => '123456',
+            'type' => 'registration',
+            'channel' => 'email',
+            'expires_at' => now()->addMinutes(10),
+            'is_used' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->from(route('register'))
+            ->post('/register', [
+                'name' => 'Weak Register User',
+                'email' => 'weak-register@example.com',
+                'password' => 'password',
+                'password_confirmation' => 'password',
+                'pin' => '1234',
+                'level' => 'retailer',
+                'otp' => '123456',
+            ])
+            ->assertRedirect(route('register'))
+            ->assertSessionHasErrors(['password']);
+
+        $this->assertDatabaseMissing('users', [
+            'email' => 'weak-register@example.com',
+        ]);
+    }
+
+    public function test_registration_sets_password_and_pin_change_timestamps(): void
+    {
+        $this->ensureOtpsTable();
+
+        DB::table('otps')->insert([
+            'email' => 'timestamp-register@example.com',
+            'otp' => '123456',
+            'type' => 'registration',
+            'channel' => 'email',
+            'expires_at' => now()->addMinutes(10),
+            'is_used' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->post('/register', [
+            'name' => 'Timestamp Register User',
+            'email' => 'timestamp-register@example.com',
+            'password' => 'StrongPass123',
+            'password_confirmation' => 'StrongPass123',
+            'pin' => '1234',
+            'level' => 'retailer',
+            'otp' => '123456',
+        ]);
+
+        $response->assertRedirect(route('dashboard'));
+
+        $this->assertDatabaseHas('users', [
+            'email' => 'timestamp-register@example.com',
+        ]);
+
+        $user = User::query()->where('email', 'timestamp-register@example.com')->firstOrFail();
+
+        $this->assertNotNull($user->password_changed_at);
+        $this->assertNotNull($user->pin_changed_at);
+    }
+
+    public function test_password_strong_setting_rejects_weak_forgot_password_reset(): void
+    {
+        $this->ensureOtpsTable();
+        $this->setSecuritySettings(['security_password_strong' => 'yes']);
+
+        $user = $this->createLoginUser(326, [
+            'name' => 'Weak Reset User',
+            'email' => 'weak-reset-user@example.com',
+        ]);
+
+        DB::table('otps')->insert([
+            'email' => $user->email,
+            'otp' => '654321',
+            'type' => 'forgot_password',
+            'channel' => 'email',
+            'expires_at' => now()->addMinutes(10),
+            'is_used' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->from(route('forgot.password'))
+            ->post(route('forgot.password.submit'), [
+                'email' => $user->email,
+                'otp' => '654321',
+                'password' => 'password',
+                'password_confirmation' => 'password',
+            ])
+            ->assertRedirect(route('forgot.password'))
+            ->assertSessionHasErrors(['password']);
+
+        $this->assertTrue(Hash::check('secret123', $user->fresh()->password));
+    }
+
+    public function test_forgot_password_reset_updates_password_changed_at(): void
+    {
+        $this->ensureOtpsTable();
+
+        $user = $this->createLoginUser(3261, [
+            'name' => 'Reset Timestamp User',
+            'email' => 'reset-timestamp-user@example.com',
+            'password_changed_at' => now()->subDays(30),
+        ]);
+
+        DB::table('otps')->insert([
+            'email' => $user->email,
+            'otp' => '654321',
+            'type' => 'forgot_password',
+            'channel' => 'email',
+            'expires_at' => now()->addMinutes(10),
+            'is_used' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->post(route('forgot.password.submit'), [
+            'email' => $user->email,
+            'otp' => '654321',
+            'password' => 'UpdatedPass123',
+            'password_confirmation' => 'UpdatedPass123',
+        ]);
+
+        $response->assertRedirect(route('login'));
+        $response->assertSessionHas('success', 'Password reset successfully. Please login.');
+
+        $user->refresh();
+
+        $this->assertTrue(Hash::check('UpdatedPass123', $user->password));
+        $this->assertTrue($user->password_changed_at->greaterThan(now()->subMinute()));
+    }
+
+    public function test_password_strong_setting_rejects_weak_profile_password_update(): void
+    {
+        $this->setSecuritySettings(['security_password_strong' => 'yes']);
+
+        $user = $this->createLoginUser(327, [
+            'name' => 'Weak Profile Password User',
+            'email' => 'weak-profile-password-user@example.com',
+            'permissions' => ['profile'],
+        ]);
+
+        $this->actingAs($user)
+            ->from('/profile')
+            ->put(route('user.profile.password'), [
+                'current_password' => 'secret123',
+                'new_password' => 'password',
+                'new_password_confirmation' => 'password',
+            ])
+            ->assertRedirect('/profile')
+            ->assertSessionHasErrors(['new_password']);
+
+        $this->assertTrue(Hash::check('secret123', $user->fresh()->password));
+    }
+
+    public function test_session_timeout_logs_out_idle_user(): void
+    {
+        $this->setSecuritySettings(['security_session_timeout_minutes' => 5]);
+
+        $user = $this->createLoginUser(3281, [
+            'name' => 'Idle User',
+            'email' => 'idle-user@example.com',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->withSession(['security.last_activity_at' => now()->subMinutes(6)->timestamp])
+            ->get(route('user.profile.api'));
+
+        $response->assertRedirect(route('login'));
+        $response->assertSessionHasErrors([
+            'email' => 'Your session expired due to inactivity. Please login again.',
+        ]);
+        $this->assertGuest();
+    }
+
+    public function test_session_timeout_logs_out_idle_admin_to_admin_login(): void
+    {
+        $this->setSecuritySettings(['security_session_timeout_minutes' => 5]);
+
+        $admin = $this->createLoginUser(3282, [
+            'name' => 'Idle Admin',
+            'email' => 'idle-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $response = $this->actingAs($admin)
+            ->withSession(['security.last_activity_at' => now()->subMinutes(6)->timestamp])
+            ->get(route('admin.security.modual'));
+
+        $response->assertRedirect(route('admin.login'));
+        $response->assertSessionHasErrors([
+            'email' => 'Your session expired due to inactivity. Please login again.',
+        ]);
+        $this->assertGuest();
+    }
+
+    public function test_password_expiry_redirects_user_until_password_is_updated(): void
+    {
+        $this->setSecuritySettings(['security_password_expire_days' => 30]);
+
+        $user = $this->createLoginUser(3283, [
+            'name' => 'Expired Password User',
+            'email' => 'expired-password-user@example.com',
+            'permissions' => ['profile'],
+            'password_changed_at' => now()->subDays(31),
+            'pin_changed_at' => now(),
+        ]);
+
+        $response = $this->actingAs($user)->get(route('user.profile.api'));
+
+        $response->assertRedirect(route('user.profile'));
+        $response->assertSessionHasErrors([
+            'credential_expiry' => 'Your password has expired. Please update it to continue.',
+        ]);
+
+        $this->actingAs($user)
+            ->put('/profile/password', [
+                'current_password' => 'secret123',
+                'new_password' => 'RenewPass123',
+                'new_password_confirmation' => 'RenewPass123',
+            ])
+            ->assertRedirect(route('user.profile'))
+            ->assertSessionHas('success', 'Password updated successfully!');
+
+        $user->refresh();
+
+        $this->assertTrue($user->password_changed_at->greaterThan(now()->subMinute()));
+        $this->actingAs($user)->get(route('user.profile.api'))->assertOk();
+    }
+
+    public function test_pin_expiry_redirects_admin_until_pin_is_updated(): void
+    {
+        $this->setSecuritySettings(['security_pin_expire_days' => 30]);
+
+        $admin = $this->createLoginUser(3284, [
+            'name' => 'Expired PIN Admin',
+            'email' => 'expired-pin-admin@example.com',
+            'is_admin' => true,
+            'password_changed_at' => now(),
+            'pin_changed_at' => now()->subDays(31),
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.security.modual'));
+
+        $response->assertRedirect(route('admin.change.credentials'));
+        $response->assertSessionHas('error', 'Your PIN has expired. Please update it to continue.');
+
+        $this->actingAs($admin)
+            ->from(route('admin.change.credentials'))
+            ->post(route('admin.update.pin'), [
+                'new_pin' => '5678',
+                'new_pin_confirmation' => '5678',
+            ])
+            ->assertRedirect(route('admin.change.credentials'))
+            ->assertSessionHas('success', 'PIN updated successfully!');
+
+        $admin->refresh();
+
+        $this->assertTrue($admin->pin_changed_at->greaterThan(now()->subMinute()));
+        $this->actingAs($admin)->get(route('admin.security.modual'))->assertOk();
+    }
+
+    public function test_password_strong_setting_rejects_weak_admin_password_update(): void
+    {
+        $this->setSecuritySettings(['security_password_strong' => 'yes']);
+
+        $admin = $this->createLoginUser(328, [
+            'name' => 'Weak Admin Password User',
+            'email' => 'weak-admin-password-user@example.com',
+            'is_admin' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->from(route('admin.change.credentials'))
+            ->post(route('admin.update.password'), [
+                'new_password' => 'password',
+                'new_password_confirmation' => 'password',
+            ])
+            ->assertRedirect(route('admin.change.credentials'))
+            ->assertSessionHasErrors(['new_password']);
+
+        $this->assertTrue(Hash::check('secret123', $admin->fresh()->password));
+    }
+
+    public function test_request_interval_blocks_rapid_manual_payment_requests(): void
+    {
+        $this->ensureManualPaymentRequestsTable();
+        $this->setSecuritySettings(['security_request_interval_minutes' => 5]);
+
+        DB::table('brandings')->insert([
+            'bkash' => '01700000000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(329, [
+            'name' => 'Manual Interval User',
+            'email' => 'manual-interval-user@example.com',
+            'permissions' => ['add_balance'],
+        ]);
+
+        DB::table('manual_payment_requests')->insert([
+            'user_id' => $user->id,
+            'method' => 'Bkash',
+            'sender_number' => '01712345678',
+            'transaction_id' => 'txn-existing',
+            'amount' => 100,
+            'status' => 'pending',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        $this->actingAs($user)
+            ->from(route('user.add.balance'))
+            ->post(route('user.add.balance.submit'), [
+                'method' => 'Bkash',
+                'sender_number' => '01712345678',
+                'transaction_id' => 'txn-new',
+                'amount' => 150,
+                'note' => 'Retry',
+            ])
+            ->assertRedirect(route('user.add.balance'))
+            ->assertSessionHasErrors(['request']);
+
+        $this->assertDatabaseCount('manual_payment_requests', 1);
+    }
+
+    public function test_operator_restrictions_do_not_apply_when_all_operators_are_off_by_default(): void
+    {
+        $this->ensureFlexiRequestsTable();
+
+        DB::table('operators')->insert([
+            'name' => 'Grameenphone',
+            'short_code' => 'GP',
+            'logo_text' => 'GP',
+            'circle_bg_color' => '#0078C8',
+            'logo_image_url' => 'uploads/gp-logo.png',
+            'logo' => 'uploads/gp-logo.png',
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $user = $this->createLoginUser(330, [
+            'name' => 'Default Operator User',
+            'email' => 'default-operator-user@example.com',
+            'main_bal' => 500,
+        ]);
+
+        $this->actingAs($user)
+            ->from('/flexiload?operator=GrameenPhone')
+            ->post('/flexiload', [
+                'operator' => 'GrameenPhone',
+                'number' => '01712345678',
+                'amount' => '100',
+                'type' => 'Prepaid',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/flexiload?operator=GrameenPhone')
+            ->assertSessionHas('success', 'Flexiload request sent successfully.');
+
+        $this->assertDatabaseCount('flexi_requests', 1);
+        $this->assertSame(400.0, (float) $user->fresh()->main_bal);
+    }
+
+    public function test_operator_setting_blocks_selected_operator_for_flexi(): void
+    {
+        $this->ensureFlexiRequestsTable();
+        $this->setSecuritySettings(['security_gp' => 'on']);
+
+        DB::table('operators')->insert([
+            'name' => 'Airtel',
+            'short_code' => 'AT',
+            'logo_text' => 'AT',
+            'circle_bg_color' => '#ff0000',
+            'logo_image_url' => 'uploads/airtel-logo.png',
+            'logo' => 'uploads/airtel-logo.png',
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $user = $this->createLoginUser(331, [
+            'name' => 'Blocked Flexi Operator User',
+            'email' => 'blocked-flexi-operator-user@example.com',
+            'main_bal' => 500,
+        ]);
+
+        $this->actingAs($user)
+            ->from('/flexiload?operator=Airtel')
+            ->post('/flexiload', [
+                'operator' => 'Airtel',
+                'number' => '01612345678',
+                'amount' => '100',
+                'type' => 'Prepaid',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/flexiload?operator=Airtel')
+            ->assertSessionHasErrors(['operator']);
+
+        $this->assertDatabaseCount('flexi_requests', 0);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
+    public function test_request_interval_blocks_rapid_flexi_requests(): void
+    {
+        $this->ensureFlexiRequestsTable();
+        $this->setSecuritySettings(['security_request_interval_minutes' => 5]);
+
+        DB::table('operators')->insert([
+            'name' => 'Grameenphone',
+            'short_code' => 'GP',
+            'logo_text' => 'GP',
+            'circle_bg_color' => '#0078C8',
+            'logo_image_url' => 'uploads/gp-logo.png',
+            'logo' => 'uploads/gp-logo.png',
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        $user = $this->createLoginUser(332, [
+            'name' => 'Flexi Interval User',
+            'email' => 'flexi-interval-user@example.com',
+            'main_bal' => 500,
+        ]);
+
+        DB::table('flexi_requests')->insert([
+            'user_id' => $user->id,
+            'operator' => 'Grameenphone',
+            'mobile' => '01712345678',
+            'amount' => 100,
+            'cost' => 100,
+            'type' => 'Prepaid',
+            'status' => 'pending',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        $this->actingAs($user)
+            ->from('/flexiload?operator=GrameenPhone')
+            ->post('/flexiload', [
+                'operator' => 'GrameenPhone',
+                'number' => '01712345678',
+                'amount' => '100',
+                'type' => 'Prepaid',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/flexiload?operator=GrameenPhone')
+            ->assertSessionHasErrors(['request']);
+
+        $this->assertDatabaseCount('flexi_requests', 1);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
+    public function test_operator_setting_blocks_selected_operator_for_internet_purchase(): void
+    {
+        $this->ensureProviderApiInternetTables();
+        $this->setSecuritySettings(['security_gp' => 'on']);
+
+        $user = $this->createLoginUser(333, [
+            'name' => 'Blocked Internet Operator User',
+            'email' => 'blocked-internet-operator-user@example.com',
+            'permissions' => ['internet'],
+            'main_bal' => 500,
+        ]);
+
+        $packageId = DB::table('regular_packages')->insertGetId([
+            'operator' => 'Robi',
+            'name' => 'Robi Pack',
+            'price' => 200,
+            'commission' => 20,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/internet-packs/Robi/buy/' . $packageId, [
+                'mobile' => '01812345678',
+                'pin' => '1234',
+            ])
+            ->assertStatus(422)
+            ->assertJson([
+                'success' => false,
+                'message' => 'This operator is currently unavailable.',
+            ]);
+
+        $this->assertDatabaseCount('regular_requests', 0);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
+    public function test_request_interval_blocks_rapid_internet_purchase(): void
+    {
+        $this->ensureProviderApiInternetTables();
+        $this->setSecuritySettings(['security_request_interval_minutes' => 5]);
+
+        $user = $this->createLoginUser(334, [
+            'name' => 'Internet Interval User',
+            'email' => 'internet-interval-user@example.com',
+            'permissions' => ['internet'],
+            'main_bal' => 500,
+        ]);
+
+        $packageId = DB::table('regular_packages')->insertGetId([
+            'operator' => 'Robi',
+            'name' => 'Robi Interval Pack',
+            'price' => 200,
+            'commission' => 20,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('regular_requests')->insert([
+            'user_id' => $user->id,
+            'package_id' => $packageId,
+            'operator' => 'Robi',
+            'mobile' => '01812345678',
+            'amount' => 180,
+            'status' => 'pending',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/internet-packs/Robi/buy/' . $packageId, [
+                'mobile' => '01812345678',
+                'pin' => '1234',
+            ])
+            ->assertStatus(422)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Please wait 5 minutes before submitting another request.',
+            ]);
+
+        $this->assertDatabaseCount('regular_requests', 1);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
+    public function test_operator_setting_blocks_selected_operator_for_drive_purchase(): void
+    {
+        $this->ensureProviderApiDriveTables();
+        $this->setSecuritySettings(['security_gp' => 'on']);
+
+        $user = $this->createLoginUser(335, [
+            'name' => 'Blocked Drive Operator User',
+            'email' => 'blocked-drive-operator-user@example.com',
+            'permissions' => ['drive'],
+            'drive_bal' => 500,
+        ]);
+
+        $packageId = DB::table('drive_packages')->insertGetId([
+            'operator' => 'Robi',
+            'name' => 'Robi Drive Pack',
+            'price' => 200,
+            'commission' => 20,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/drive-offers/Robi/buy/' . $packageId, [
+                'mobile' => '01812345678',
+                'pin' => '1234',
+            ])
+            ->assertStatus(422)
+            ->assertJson([
+                'success' => false,
+                'message' => 'This operator is currently unavailable.',
+            ]);
+
+        $this->assertDatabaseCount('drive_requests', 0);
+        $this->assertSame(500.0, (float) $user->fresh()->drive_bal);
+    }
+
+    public function test_request_interval_blocks_rapid_drive_purchase(): void
+    {
+        $this->ensureProviderApiDriveTables();
+        $this->setSecuritySettings(['security_request_interval_minutes' => 5]);
+
+        $user = $this->createLoginUser(336, [
+            'name' => 'Drive Interval User',
+            'email' => 'drive-interval-user@example.com',
+            'permissions' => ['drive'],
+            'drive_bal' => 500,
+        ]);
+
+        $packageId = DB::table('drive_packages')->insertGetId([
+            'operator' => 'Robi',
+            'name' => 'Robi Drive Interval Pack',
+            'price' => 200,
+            'commission' => 20,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('drive_requests')->insert([
+            'user_id' => $user->id,
+            'package_id' => $packageId,
+            'operator' => 'Robi',
+            'mobile' => '01812345678',
+            'amount' => 180,
+            'status' => 'pending',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/drive-offers/Robi/buy/' . $packageId, [
+                'mobile' => '01812345678',
+                'pin' => '1234',
+            ])
+            ->assertStatus(422)
+            ->assertJson([
+                'success' => false,
+                'message' => 'Please wait 5 minutes before submitting another request.',
+            ]);
+
+        $this->assertDatabaseCount('drive_requests', 1);
+        $this->assertSame(500.0, (float) $user->fresh()->drive_bal);
+    }
+
+    public function test_flexi_request_is_blocked_when_amount_exists_in_recharge_block_list(): void
+    {
+        $this->ensureFlexiRequestsTable();
+        $this->ensureRechargeBlockListsTable();
+
+        DB::table('operators')->insert([
+            'name' => 'Grameenphone',
+            'short_code' => 'GP',
+            'logo_text' => 'GP',
+            'circle_bg_color' => '#0078C8',
+            'logo_image_url' => 'uploads/gp-logo.png',
+            'logo' => 'uploads/gp-logo.png',
+            'is_active' => true,
+            'sort_order' => 1,
+        ]);
+
+        DB::table('recharge_block_lists')->insert([
+            'service' => 'Flexiload',
+            'operator' => 'GP',
+            'amount' => 100,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(322, [
+            'name' => 'Blocked Flexi User',
+            'email' => 'blocked-flexi-user@example.com',
+            'main_bal' => 500,
+        ]);
+
+        $this->actingAs($user)
+            ->from('/flexiload?operator=GrameenPhone')
+            ->post('/flexiload', [
+                'operator' => 'GrameenPhone',
+                'number' => '01712345678',
+                'amount' => '100',
+                'type' => 'Prepaid',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/flexiload?operator=GrameenPhone')
+            ->assertSessionHasErrors(['amount']);
+
+        $this->assertDatabaseCount('flexi_requests', 0);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
+    public function test_internet_purchase_is_blocked_when_amount_exists_in_recharge_block_list(): void
+    {
+        $this->ensureRechargeBlockListsTable();
+
+        if (! Schema::hasTable('regular_packages')) {
+            Schema::create('regular_packages', function (Blueprint $table) {
+                $table->id();
+                $table->string('operator');
+                $table->string('name');
+                $table->decimal('price', 10, 2);
+                $table->decimal('commission', 10, 2);
+                $table->date('expire');
+                $table->string('status')->default('active');
+                $table->integer('sell_today')->default(0);
+                $table->decimal('amount', 10, 2)->default(0);
+                $table->decimal('comm', 10, 2)->default(0);
+                $table->timestamps();
+            });
+        }
+
+        if (! Schema::hasTable('regular_requests')) {
+            Schema::create('regular_requests', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('user_id');
+                $table->unsignedBigInteger('package_id')->nullable();
+                $table->string('operator')->nullable();
+                $table->string('mobile')->nullable();
+                $table->decimal('amount', 10, 2)->default(0);
+                $table->string('status')->default('pending');
+                $table->text('description')->nullable();
+                $table->timestamps();
+            });
+        }
+
+        DB::table('recharge_block_lists')->insert([
+            'service' => 'InternetPack',
+            'operator' => 'RB',
+            'amount' => 180,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('users')->insert([
+            'id' => 323,
+            'name' => 'Blocked Internet User',
+            'email' => 'blocked-internet-user@example.com',
+            'password' => 'secret',
+            'pin' => Hash::make('1234'),
+            'permissions' => json_encode(['internet']),
+            'main_bal' => 500,
+            'is_admin' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $packageId = DB::table('regular_packages')->insertGetId([
+            'operator' => 'Robi',
+            'name' => 'Blocked Internet Pack',
+            'price' => 200,
+            'commission' => 20,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = User::query()->findOrFail(323);
+
+        $this->actingAs($user)
+            ->postJson('/internet-packs/Robi/buy/' . $packageId, [
+                'mobile' => '01812345678',
+                'pin' => '1234',
+            ])
+            ->assertStatus(422)
+            ->assertJson([
+                'success' => false,
+                'message' => 'This recharge amount is blocked.',
+            ]);
+
+        $this->assertSame(0, DB::table('regular_requests')->where('user_id', 323)->count());
+        $this->assertSame(500.0, (float) DB::table('users')->where('id', 323)->value('main_bal'));
     }
 
     public function test_user_all_history_defaults_to_today_only_and_old_data_can_be_filtered(): void
@@ -8220,6 +9713,8 @@ class ExampleTest extends TestCase
             'api_key' => null,
             'api_access_enabled' => false,
             'api_services' => null,
+            'password_changed_at' => now(),
+            'pin_changed_at' => now(),
             'created_at' => now(),
             'updated_at' => now(),
         ], $overrides);
@@ -8565,6 +10060,22 @@ class ExampleTest extends TestCase
         $this->ensureRoutedRequestColumns('flexi_requests');
     }
 
+    private function ensureRechargeBlockListsTable(): void
+    {
+        if (Schema::hasTable('recharge_block_lists')) {
+            return;
+        }
+
+        Schema::create('recharge_block_lists', function (Blueprint $table) {
+            $table->id();
+            $table->string('service');
+            $table->string('operator', 20);
+            $table->decimal('amount', 15, 2);
+            $table->timestamps();
+            $table->unique(['service', 'operator', 'amount']);
+        });
+    }
+
     private function ensureManualPaymentRequestsTable(): void
     {
         if (Schema::hasTable('manual_payment_requests')) {
@@ -8583,6 +10094,35 @@ class ExampleTest extends TestCase
             $table->text('admin_note')->nullable();
             $table->timestamps();
         });
+    }
+
+    private function ensureOtpsTable(): void
+    {
+        if (Schema::hasTable('otps')) {
+            return;
+        }
+
+        Schema::create('otps', function (Blueprint $table) {
+            $table->id();
+            $table->string('email')->nullable();
+            $table->string('mobile')->nullable();
+            $table->string('otp', 6);
+            $table->string('type');
+            $table->string('channel')->default('email');
+            $table->timestamp('expires_at');
+            $table->boolean('is_used')->default(false);
+            $table->timestamps();
+        });
+    }
+
+    private function setSecuritySettings(array $overrides): void
+    {
+        DB::table('homepage_settings')->delete();
+
+        DB::table('homepage_settings')->insert(array_merge([
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $overrides));
     }
 
     private function ensureProviderApiDriveTables(): void

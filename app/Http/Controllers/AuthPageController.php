@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\DeviceApprovalService;
 use App\Services\GoogleOtpService;
 use App\Services\OtpService;
+use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -18,12 +19,14 @@ class AuthPageController extends Controller
     protected $otpService;
     protected $deviceApprovalService;
     protected $googleOtpService;
+    protected $securityRuntime;
 
-    public function __construct(OtpService $otpService, DeviceApprovalService $deviceApprovalService, GoogleOtpService $googleOtpService)
+    public function __construct(OtpService $otpService, DeviceApprovalService $deviceApprovalService, GoogleOtpService $googleOtpService, SecurityRuntimeService $securityRuntime)
     {
         $this->otpService = $otpService;
         $this->deviceApprovalService = $deviceApprovalService;
         $this->googleOtpService = $googleOtpService;
+        $this->securityRuntime = $securityRuntime;
     }
 
     public function showLoginForm()
@@ -34,6 +37,7 @@ class AuthPageController extends Controller
     public function login(Request $request)
     {
         $settings = HomepageSetting::firstOrCreate([]);
+        $captchaQuestion = $this->securityRuntime->loginCaptchaQuestion($request, 'reseller');
         $devicePreview = $this->deviceApprovalService->preview($request);
         $ip = $devicePreview['ip'];
         $browser = implode(' | ', array_filter([
@@ -42,7 +46,7 @@ class AuthPageController extends Controller
             $devicePreview['device_type'],
         ]));
 
-        return view('auth.login', compact('settings', 'ip', 'browser'));
+        return view('auth.login', compact('settings', 'ip', 'browser', 'captchaQuestion'));
     }
 
     public function handleLogin(Request $request)
@@ -52,6 +56,12 @@ class AuthPageController extends Controller
             'password' => ['required'],
             'pin' => ['required', 'digits:4'],
         ]);
+
+        if (! $this->securityRuntime->validateLoginCaptcha($request, 'reseller', $request->input('captcha'))) {
+            return back()->withErrors([
+                'captcha' => 'Invalid captcha answer.',
+            ])->withInput($request->except(['password', 'pin', 'captcha']));
+        }
 
         $remember = $request->boolean('remember');
         $user = User::query()->where('email', $credentials['email'])->first();
@@ -193,6 +203,7 @@ class AuthPageController extends Controller
 
         Auth::login($user, $remember);
         $request->session()->regenerate();
+        $this->securityRuntime->touchSessionActivity($request);
 
         return redirect()->intended('dashboard')
             ->cookie($this->deviceApprovalService->makeCookie($deviceAccess['token']));
@@ -219,7 +230,7 @@ class AuthPageController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'min:6', 'confirmed'],
+            'password' => $this->securityRuntime->passwordRules(),
             'pin' => ['required', 'digits:4'],
             'level' => ['required', 'in:house,dgm,dealer,seller,retailer'],
             'otp' => ['required', 'digits:6'],
@@ -235,6 +246,8 @@ class AuthPageController extends Controller
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'pin' => Hash::make($validated['pin']),
+            'password_changed_at' => now(),
+            'pin_changed_at' => now(),
             'is_admin' => false,
             'is_active' => true,
             'level' => $validated['level'],
@@ -242,6 +255,7 @@ class AuthPageController extends Controller
 
         Auth::login($user);
         $request->session()->regenerate();
+        $this->securityRuntime->touchSessionActivity($request);
 
         return redirect()->route('dashboard');
     }
@@ -301,7 +315,7 @@ class AuthPageController extends Controller
         $validated = $request->validate([
             'email' => ['required', 'email', 'exists:users,email'],
             'otp' => ['required', 'digits:6'],
-            'password' => ['required', 'min:6', 'confirmed'],
+            'password' => $this->securityRuntime->passwordRules(),
         ]);
 
         if (!$this->otpService->verifyOtp($validated['email'], $validated['otp'], 'forgot_password')) {
@@ -309,7 +323,10 @@ class AuthPageController extends Controller
         }
 
         $user = User::where('email', $validated['email'])->first();
-        $user->update(['password' => Hash::make($validated['password'])]);
+        $user->update([
+            'password' => Hash::make($validated['password']),
+            'password_changed_at' => now(),
+        ]);
 
         return redirect()->route('login')->with('success', 'Password reset successfully. Please login.');
     }

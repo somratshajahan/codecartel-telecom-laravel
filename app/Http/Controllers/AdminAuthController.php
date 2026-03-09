@@ -6,6 +6,7 @@ use App\Models\HomepageSetting;
 use App\Models\User;
 use App\Services\DeviceApprovalService;
 use App\Services\GoogleOtpService;
+use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -17,15 +18,17 @@ class AdminAuthController extends Controller
     public function __construct(
         protected DeviceApprovalService $deviceApprovalService,
         protected GoogleOtpService $googleOtpService,
+        protected SecurityRuntimeService $securityRuntime,
     ) {}
 
     public function showLogin(Request $request)
     {
         $settings = HomepageSetting::first();
+        $captchaQuestion = $this->securityRuntime->loginCaptchaQuestion($request, 'admin');
         $devicePreview = $this->deviceApprovalService->preview($request);
         $ip = $devicePreview['ip'];
 
-        return view('auth.admin-login', compact('settings', 'ip'));
+        return view('auth.admin-login', compact('settings', 'ip', 'captchaQuestion'));
     }
 
     public function handleLogin(Request $request)
@@ -35,6 +38,12 @@ class AdminAuthController extends Controller
             'password' => ['required'],
             'pin' => ['required', 'digits:4'],
         ]);
+
+        if (! $this->securityRuntime->validateLoginCaptcha($request, 'admin', $request->input('captcha'))) {
+            return back()->withErrors([
+                'captcha' => 'Invalid captcha answer.',
+            ])->withInput($request->except(['password', 'pin', 'captcha']));
+        }
 
         $remember = $request->boolean('remember');
         $user = User::query()->where('email', $validated['email'])->first();
@@ -164,6 +173,7 @@ class AdminAuthController extends Controller
         $request->session()->forget(self::OTP_LOGIN_SESSION_KEY);
         Auth::login($user, $remember);
         $request->session()->regenerate();
+        $this->securityRuntime->touchSessionActivity($request);
 
         return redirect()->route('admin.dashboard');
     }

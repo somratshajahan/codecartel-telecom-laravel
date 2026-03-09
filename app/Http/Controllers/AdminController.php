@@ -6,11 +6,13 @@ use App\Models\User;
 use App\Models\HomepageSetting;
 use App\Models\ManualPaymentRequest;
 use App\Models\Operator;
+use App\Models\RechargeBlockList;
 use App\Models\DrivePackage;
 use App\Models\RegularPackage;
 use App\Models\ServiceModule;
 use App\Services\FirebasePushNotificationService;
 use App\Services\GoogleOtpService;
+use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -882,11 +884,16 @@ class AdminController extends Controller
      */
     public function updatePassword(Request $request)
     {
+        $securityRuntime = app(SecurityRuntimeService::class);
+
         $validated = $request->validate([
-            'new_password' => ['required', 'min:6', 'confirmed'],
+            'new_password' => $securityRuntime->passwordRules(),
         ]);
 
-        auth()->user()->update(['password' => \Hash::make($validated['new_password'])]);
+        auth()->user()->update([
+            'password' => Hash::make($validated['new_password']),
+            'password_changed_at' => now(),
+        ]);
 
         return redirect()->back()->with('success', 'Password updated successfully!');
     }
@@ -900,7 +907,10 @@ class AdminController extends Controller
             'new_pin' => ['required', 'digits:4', 'confirmed'],
         ]);
 
-        auth()->user()->update(['pin' => \Hash::make($validated['new_pin'])]);
+        auth()->user()->update([
+            'pin' => Hash::make($validated['new_pin']),
+            'pin_changed_at' => now(),
+        ]);
 
         return redirect()->back()->with('success', 'PIN updated successfully!');
     }
@@ -2532,6 +2542,866 @@ class AdminController extends Controller
         return ServiceModule::query()->findOrFail($serviceModule);
     }
 
+    protected function rechargeBlockServiceOptions(): array
+    {
+        return [
+            'Flexiload' => 'Flexiload',
+            'InternetPack' => 'InternetPack',
+        ];
+    }
+
+    protected function normalizeRechargeBlockOperator(?string $operator): string
+    {
+        $normalized = strtoupper(preg_replace('/[^A-Z0-9]/i', '', (string) $operator));
+
+        return match ($normalized) {
+            'GRAMEENPHONE', 'GP' => 'GP',
+            'ROBI', 'RB' => 'RB',
+            'AIRTEL', 'AT' => 'AT',
+            'BANGLALINK', 'BL' => 'BL',
+            'TELETALK', 'TT' => 'TT',
+            default => substr($normalized, 0, 20),
+        };
+    }
+
+    protected function rechargeBlockOperatorOptions($operators): array
+    {
+        $fallbackOptions = [
+            'GP' => 'Grameenphone',
+            'RB' => 'Robi',
+            'AT' => 'Airtel',
+            'BL' => 'Banglalink',
+            'TT' => 'Teletalk',
+        ];
+
+        $databaseOptions = collect($operators)->mapWithKeys(function ($operator) {
+            $label = trim((string) ($operator->name ?? $operator['name'] ?? ''));
+            $optionValue = $this->normalizeRechargeBlockOperator((string) ($operator->short_code ?? $operator['short_code'] ?? $label));
+
+            return $label !== '' && $optionValue !== ''
+                ? [$optionValue => $label]
+                : [];
+        })->all();
+
+        return array_replace($fallbackOptions, $databaseOptions);
+    }
+
+    protected function validatedRechargeBlockListPayload(Request $request): array
+    {
+        $validated = $request->validate([
+            'service' => ['required', Rule::in(array_keys($this->rechargeBlockServiceOptions()))],
+            'operator' => ['required', 'string', 'max:50'],
+            'amount' => ['required', 'numeric', 'min:0.01'],
+        ]);
+
+        return [
+            'service' => $validated['service'],
+            'operator' => $this->normalizeRechargeBlockOperator($validated['operator']),
+            'amount' => round((float) $validated['amount'], 2),
+        ];
+    }
+
+    protected function findRechargeBlockListOrFail($rechargeBlockList): RechargeBlockList
+    {
+        return RechargeBlockList::query()->findOrFail($rechargeBlockList);
+    }
+
+    protected function securitySettingsDefaults(): array
+    {
+        return [
+            'security_ssl_https_redirect' => 'disable',
+            'security_admin_login_captcha' => 'disable',
+            'security_reseller_login_captcha' => 'disable',
+            'security_pin_expire_days' => 100,
+            'security_password_expire_days' => 100,
+            'security_password_strong' => 'yes',
+            'security_minimum_pin_length' => 4,
+            'security_request_interval_minutes' => 1,
+            'security_session_timeout_minutes' => 20000,
+            'security_support_ticket' => 'enable',
+            'security_send_otp_via' => 'sms_modem',
+            'security_send_alert_via' => 'sms_modem',
+            'security_send_offline_sms_via' => 'sms_modem',
+            'security_bulk_flexi_limit' => 1000,
+            'security_auto_sending_limit' => 999,
+            'security_reseller_overpayment_limit' => 'no',
+            'security_modem' => 'modem_v1',
+            'security_daily_limit' => 5000000,
+            'security_gp' => 'off',
+            'security_robi' => 'off',
+            'security_banglalink' => 'off',
+            'security_airtel' => 'off',
+            'security_teletalk' => 'off',
+            'security_skitto' => 'off',
+            'security_popup_notice' => 'on',
+            'security_sms_sent_system' => 'only_offline',
+            'security_bank_balance' => 'on',
+            'security_drive_balance' => 'off',
+            'security_balance_transfer' => 'on',
+            'security_commission_system' => 'all_level',
+        ];
+    }
+
+    protected function securitySettingsColumnNames(): array
+    {
+        return array_keys($this->securitySettingsDefaults());
+    }
+
+    protected function securitySettingsSchemaReady(): bool
+    {
+        if (! Schema::hasTable('homepage_settings')) {
+            return false;
+        }
+
+        foreach ($this->securitySettingsColumnNames() as $column) {
+            if (! Schema::hasColumn('homepage_settings', $column)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected function securitySettingOptions(): array
+    {
+        return [
+            'enable_disable' => [
+                'disable' => 'Disable',
+                'enable' => 'Enable',
+            ],
+            'yes_no' => [
+                'yes' => 'Yes',
+                'no' => 'No',
+            ],
+            'on_off' => [
+                'on' => 'On',
+                'off' => 'Off',
+            ],
+            'delivery_channels' => [
+                'sms_modem' => 'SMS Modem',
+                'sms_api' => 'SMS API',
+                'email' => 'Email',
+            ],
+            'modems' => [
+                'modem_v1' => 'Modem V.1',
+                'modem_v2' => 'Modem V.2',
+                'api_gateway' => 'API Gateway',
+            ],
+            'sms_sent_systems' => [
+                'only_offline' => 'Only Offline',
+                'only_online' => 'Only Online',
+                'online_offline' => 'Online + Offline',
+            ],
+            'commission_systems' => [
+                'all_level' => 'All level',
+                'single_level' => 'Single level',
+                'off' => 'Off',
+            ],
+        ];
+    }
+
+    protected function resolvedSecuritySettings(HomepageSetting $settings): array
+    {
+        return collect($this->securitySettingsDefaults())->mapWithKeys(function ($default, $key) use ($settings) {
+            $value = $settings->{$key} ?? null;
+
+            return [$key => $value !== null ? $value : $default];
+        })->all();
+    }
+
+    protected function securitySettingsValidationRules(): array
+    {
+        $options = $this->securitySettingOptions();
+
+        return [
+            'security_ssl_https_redirect' => ['required', Rule::in(array_keys($options['enable_disable']))],
+            'security_admin_login_captcha' => ['required', Rule::in(array_keys($options['enable_disable']))],
+            'security_reseller_login_captcha' => ['required', Rule::in(array_keys($options['enable_disable']))],
+            'security_pin_expire_days' => ['required', 'integer', 'min:0'],
+            'security_password_expire_days' => ['required', 'integer', 'min:0'],
+            'security_password_strong' => ['required', Rule::in(array_keys($options['yes_no']))],
+            'security_minimum_pin_length' => ['required', 'integer', 'min:1'],
+            'security_request_interval_minutes' => ['required', 'integer', 'min:0'],
+            'security_session_timeout_minutes' => ['required', 'integer', 'min:1'],
+            'security_support_ticket' => ['required', Rule::in(array_keys($options['enable_disable']))],
+            'security_send_otp_via' => ['required', Rule::in(array_keys($options['delivery_channels']))],
+            'security_send_alert_via' => ['required', Rule::in(array_keys($options['delivery_channels']))],
+            'security_send_offline_sms_via' => ['required', Rule::in(array_keys($options['delivery_channels']))],
+            'security_bulk_flexi_limit' => ['required', 'integer', 'min:0'],
+            'security_auto_sending_limit' => ['required', 'integer', 'min:0'],
+            'security_reseller_overpayment_limit' => ['required', Rule::in(array_keys($options['yes_no']))],
+            'security_modem' => ['required', Rule::in(array_keys($options['modems']))],
+            'security_daily_limit' => ['required', 'integer', 'min:0'],
+            'security_gp' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_robi' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_banglalink' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_airtel' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_teletalk' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_skitto' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_popup_notice' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_sms_sent_system' => ['required', Rule::in(array_keys($options['sms_sent_systems']))],
+            'security_bank_balance' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_drive_balance' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_balance_transfer' => ['required', Rule::in(array_keys($options['on_off']))],
+            'security_commission_system' => ['required', Rule::in(array_keys($options['commission_systems']))],
+        ];
+    }
+
+    protected function validatedSecuritySettingsPayload(Request $request): array
+    {
+        $validated = $request->validate($this->securitySettingsValidationRules());
+
+        foreach (
+            [
+                'security_pin_expire_days',
+                'security_password_expire_days',
+                'security_minimum_pin_length',
+                'security_request_interval_minutes',
+                'security_session_timeout_minutes',
+                'security_bulk_flexi_limit',
+                'security_auto_sending_limit',
+                'security_daily_limit',
+            ] as $field
+        ) {
+            $validated[$field] = (int) $validated[$field];
+        }
+
+        return $validated;
+    }
+
+    /**
+     * Show Security Modual page.
+     */
+    public function securityModual()
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+        $operators = Operator::all();
+        $securitySettingsSchemaReady = $this->securitySettingsSchemaReady();
+        $securitySettings = $this->resolvedSecuritySettings($settings);
+        $securitySettingOptions = $this->securitySettingOptions();
+        $pendingCount = $this->pendingRequestCount();
+        $totalAmount = 0;
+        $totalUsers = 0;
+        $today = 0;
+        $yesterday = 0;
+        $balanceToday = 0;
+        $balanceYesterday = 0;
+        $operatorSales = collect();
+        $bankingSales = collect();
+
+        return view('admin', compact(
+            'settings',
+            'operators',
+            'securitySettings',
+            'securitySettingsSchemaReady',
+            'securitySettingOptions',
+            'pendingCount',
+            'totalAmount',
+            'totalUsers',
+            'today',
+            'yesterday',
+            'balanceToday',
+            'balanceYesterday',
+            'operatorSales',
+            'bankingSales'
+        ));
+    }
+
+    /**
+     * Show Daily Reports page.
+     */
+    public function dailyReports(Request $request)
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+        $pendingCount = $this->pendingRequestCount();
+        $selectedDate = (string) $request->query('date', now()->toDateString());
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $selectedDate)) {
+            $selectedDate = now()->toDateString();
+        }
+
+        $reportCards = [
+            ['title' => 'Flexiload', 'total' => 0],
+            ['title' => 'InternetPack', 'total' => 0],
+            ['title' => 'Sonali Bank Limited', 'total' => 0],
+            ['title' => 'GlobalFlexi', 'total' => 0],
+            ['title' => 'BillPay2', 'total' => 0],
+            ['title' => 'BPO', 'total' => 0],
+        ];
+
+        return view('admin.daily-reports', compact(
+            'settings',
+            'pendingCount',
+            'selectedDate',
+            'reportCards'
+        ));
+    }
+
+    /**
+     * Show Sales / Route Report page.
+     */
+    public function salesReport(Request $request)
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+        $pendingCount = $this->pendingRequestCount();
+        $moduleOptions = [
+            '' => '--Any--',
+            'flexiload' => 'Flexiload',
+            'internet_pack' => 'InternetPack',
+        ];
+        $defaultDateFrom = '2025-07-01';
+        $defaultDateTo = '2026-03-09';
+
+        $selectedModule = (string) $request->query('module', '');
+        $selectedSimTo = trim((string) $request->query('sim_to', ''));
+        $dateFrom = (string) $request->query('date_from', $defaultDateFrom);
+        $dateTo = (string) $request->query('date_to', $defaultDateTo);
+
+        if (! array_key_exists($selectedModule, $moduleOptions)) {
+            $selectedModule = '';
+        }
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) {
+            $dateFrom = $defaultDateFrom;
+        }
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo)) {
+            $dateTo = $defaultDateTo;
+        }
+
+        $startDate = \Carbon\Carbon::parse($dateFrom)->startOfDay();
+        $endDate = \Carbon\Carbon::parse($dateTo)->endOfDay();
+
+        if ($startDate->gt($endDate)) {
+            $endDate = $startDate->copy()->endOfDay();
+        }
+
+        $dateFrom = $startDate->toDateString();
+        $dateTo = $endDate->toDateString();
+
+        $summaryDefinitions = collect([
+            ['key' => 'flexiload', 'label' => 'Flexiload'],
+            ['key' => 'internet_pack', 'label' => 'InternetPack'],
+        ]);
+
+        if ($selectedModule !== '') {
+            $summaryDefinitions = $summaryDefinitions
+                ->filter(function (array $definition) use ($selectedModule) {
+                    return $definition['key'] === $selectedModule;
+                })
+                ->values();
+        }
+
+        $reportEntries = $this->collectRouteReportEntries($startDate, $endDate, $selectedModule);
+
+        if ($selectedSimTo !== '') {
+            $reportEntries = $reportEntries
+                ->filter(function (array $entry) use ($selectedSimTo) {
+                    return $this->routeReportMatchesSimTo($entry['route_label'] ?? null, $selectedSimTo);
+                })
+                ->values();
+        }
+
+        $summaryRows = $summaryDefinitions
+            ->map(function (array $definition) use ($reportEntries) {
+                $moduleEntries = $reportEntries->where('module', $definition['key']);
+
+                return [
+                    'label' => $definition['label'],
+                    'amount' => (float) $moduleEntries->sum('amount'),
+                    'qty' => $moduleEntries->count(),
+                ];
+            })
+            ->values();
+
+        $totalAmount = (float) $summaryRows->sum('amount');
+
+        return view('admin.sales-report', compact(
+            'settings',
+            'pendingCount',
+            'moduleOptions',
+            'selectedModule',
+            'selectedSimTo',
+            'dateFrom',
+            'dateTo',
+            'summaryRows',
+            'totalAmount'
+        ));
+    }
+
+    protected function collectRouteReportEntries($startDate, $endDate, string $selectedModule)
+    {
+        $finalStatuses = ['approved', 'rejected', 'cancelled'];
+        $entries = collect();
+
+        if (($selectedModule === '' || $selectedModule === 'flexiload') && Schema::hasTable('flexi_requests')) {
+            $flexiQuery = \DB::table('flexi_requests')->select([
+                'flexi_requests.amount',
+                $this->routeReportSelectableColumn('flexi_requests', 'is_routed'),
+                $this->routeReportSelectableColumn('flexi_requests', 'route_api_id'),
+                $this->routeReportSelectableColumn('flexi_requests', 'source_client_domain'),
+            ]);
+
+            if (Schema::hasTable('apis') && Schema::hasColumn('flexi_requests', 'route_api_id')) {
+                $flexiQuery
+                    ->leftJoin('apis', 'flexi_requests.route_api_id', '=', 'apis.id')
+                    ->addSelect('apis.title as api_title', 'apis.provider as api_provider');
+            } else {
+                $flexiQuery
+                    ->addSelect(\DB::raw('NULL as api_title'))
+                    ->addSelect(\DB::raw('NULL as api_provider'));
+            }
+
+            $entries = $entries->concat(
+                $flexiQuery
+                    ->whereIn('flexi_requests.status', $finalStatuses)
+                    ->whereBetween('flexi_requests.created_at', [$startDate, $endDate])
+                    ->get()
+                    ->map(function ($item) {
+                        return [
+                            'module' => 'flexiload',
+                            'amount' => (float) ($item->amount ?? 0),
+                            'route_label' => $this->resolveRouteReportDestinationLabel($item),
+                        ];
+                    })
+            );
+        }
+
+        if (($selectedModule === '' || $selectedModule === 'internet_pack') && Schema::hasTable('regular_requests')) {
+            $regularQuery = \DB::table('regular_requests')->select([
+                'regular_requests.amount',
+                $this->routeReportSelectableColumn('regular_requests', 'is_routed'),
+                $this->routeReportSelectableColumn('regular_requests', 'route_api_id'),
+                $this->routeReportSelectableColumn('regular_requests', 'source_client_domain'),
+            ]);
+
+            if (Schema::hasTable('apis') && Schema::hasColumn('regular_requests', 'route_api_id')) {
+                $regularQuery
+                    ->leftJoin('apis', 'regular_requests.route_api_id', '=', 'apis.id')
+                    ->addSelect('apis.title as api_title', 'apis.provider as api_provider');
+            } else {
+                $regularQuery
+                    ->addSelect(\DB::raw('NULL as api_title'))
+                    ->addSelect(\DB::raw('NULL as api_provider'));
+            }
+
+            $entries = $entries->concat(
+                $regularQuery
+                    ->whereIn('regular_requests.status', $finalStatuses)
+                    ->whereBetween('regular_requests.created_at', [$startDate, $endDate])
+                    ->get()
+                    ->map(function ($item) {
+                        return [
+                            'module' => 'internet_pack',
+                            'amount' => (float) ($item->amount ?? 0),
+                            'route_label' => $this->resolveRouteReportDestinationLabel($item),
+                        ];
+                    })
+            );
+        }
+
+        return $entries->values();
+    }
+
+    protected function routeReportSelectableColumn(string $table, string $column, ?string $alias = null)
+    {
+        $alias = $alias ?: $column;
+
+        if (! Schema::hasColumn($table, $column)) {
+            return \DB::raw('NULL as ' . $alias);
+        }
+
+        if ($alias !== $column) {
+            return $table . '.' . $column . ' as ' . $alias;
+        }
+
+        return $table . '.' . $column;
+    }
+
+    protected function resolveRouteReportDestinationLabel(object $item): string
+    {
+        $parts = collect([
+            trim((string) ($item->api_title ?? '')),
+            trim((string) ($item->api_provider ?? '')),
+            trim((string) ($item->source_client_domain ?? '')),
+        ])
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($parts->isNotEmpty()) {
+            return $parts->implode(' / ');
+        }
+
+        if ((bool) ($item->is_routed ?? false) || filled($item->route_api_id ?? null)) {
+            return 'Routed API';
+        }
+
+        return 'Direct';
+    }
+
+    protected function routeReportMatchesSimTo(?string $routeLabel, string $selectedSimTo): bool
+    {
+        $needle = trim($selectedSimTo);
+
+        if ($needle === '') {
+            return true;
+        }
+
+        return stripos((string) $routeLabel, $needle) !== false;
+    }
+
+    /**
+     * Show Operator Reports page.
+     */
+    public function operatorReports(Request $request)
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+        $pendingCount = $this->pendingRequestCount();
+        $operatorOptions = $this->operatorReportLabels();
+        $statusOptions = [
+            'success' => 'Success',
+            'failed' => 'Failed',
+            'cancelled' => 'Cancelled',
+        ];
+
+        $defaultDateFrom = now()->subMonths(3)->startOfMonth()->toDateString();
+        $defaultDateTo = now()->toDateString();
+
+        $selectedOperator = (string) $request->query('operator', '');
+        $selectedReseller = (string) $request->query('reseller', '');
+        $selectedStatus = (string) $request->query('status', '');
+        $dateFrom = (string) $request->query('date_from', $defaultDateFrom);
+        $dateTo = (string) $request->query('date_to', $defaultDateTo);
+
+        if (! in_array($selectedOperator, $operatorOptions, true)) {
+            $selectedOperator = '';
+        }
+
+        if ($selectedStatus !== '' && ! array_key_exists($selectedStatus, $statusOptions)) {
+            $selectedStatus = '';
+        }
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) {
+            $dateFrom = $defaultDateFrom;
+        }
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo)) {
+            $dateTo = $defaultDateTo;
+        }
+
+        $startDate = \Carbon\Carbon::parse($dateFrom)->startOfDay();
+        $endDate = \Carbon\Carbon::parse($dateTo)->endOfDay();
+
+        if ($startDate->gt($endDate)) {
+            $endDate = $startDate->copy()->endOfDay();
+            $dateTo = $dateFrom;
+        }
+
+        $allHistory = $this->collectOperatorReportHistory($startDate, $endDate);
+
+        $resellerOptions = $allHistory
+            ->map(function ($item) {
+                return (object) [
+                    'id' => (string) $item->user_id,
+                    'name' => $item->user->name ?? 'N/A',
+                ];
+            })
+            ->unique('id')
+            ->sortBy('name', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values();
+
+        if ($selectedReseller !== '') {
+            $allHistory = $allHistory->filter(function ($item) use ($selectedReseller) {
+                return (string) $item->user_id === $selectedReseller
+                    || strcasecmp($item->user->name ?? '', $selectedReseller) === 0;
+            })->values();
+        }
+
+        if ($selectedStatus !== '') {
+            $allHistory = $allHistory->filter(function ($item) use ($selectedStatus) {
+                return $item->status === $selectedStatus;
+            })->values();
+        }
+
+        $groupedTotals = $allHistory->reduce(function ($carry, $item) {
+            $label = $this->resolveOperatorReportLabel($item->operator ?? '');
+
+            if ($label === null) {
+                return $carry;
+            }
+
+            $carry[$label] = ($carry[$label] ?? 0) + (float) ($item->amount ?? 0);
+
+            return $carry;
+        }, []);
+
+        $operatorRows = collect($operatorOptions)
+            ->map(function ($label, $index) use ($groupedTotals) {
+                return [
+                    'nr' => $index + 1,
+                    'operator' => $label,
+                    'amount' => (float) ($groupedTotals[$label] ?? 0),
+                ];
+            });
+
+        if ($selectedOperator !== '') {
+            $operatorRows = $operatorRows
+                ->filter(function ($row) use ($selectedOperator) {
+                    return $row['operator'] === $selectedOperator;
+                })
+                ->values()
+                ->map(function ($row, $index) {
+                    $row['nr'] = $index + 1;
+
+                    return $row;
+                });
+        }
+
+        $totalAmount = $operatorRows->sum('amount');
+
+        return view('admin.operator-reports', compact(
+            'settings',
+            'pendingCount',
+            'operatorOptions',
+            'resellerOptions',
+            'statusOptions',
+            'selectedOperator',
+            'selectedReseller',
+            'selectedStatus',
+            'dateFrom',
+            'dateTo',
+            'operatorRows',
+            'totalAmount'
+        ));
+    }
+
+    protected function operatorReportLabels(): array
+    {
+        return [
+            'GrameenPhone',
+            'Robi',
+            'Banglalink',
+            'Airtel',
+            'TeleTalk',
+            'Citycell',
+            'Bkash Personal',
+            'bKash Agent',
+            'DBBL',
+            'Skito',
+        ];
+    }
+
+    protected function resolveOperatorReportLabel(?string $operator): ?string
+    {
+        $normalized = strtolower(preg_replace('/[^A-Za-z0-9]+/', '', trim((string) $operator)));
+
+        return match ($normalized) {
+            'grameenphone', 'gp' => 'GrameenPhone',
+            'robi' => 'Robi',
+            'banglalink', 'bl' => 'Banglalink',
+            'airtel', 'at' => 'Airtel',
+            'teletalk', 'tt' => 'TeleTalk',
+            'citycell' => 'Citycell',
+            'bkash', 'bkashpersonal', 'personalbkash' => 'Bkash Personal',
+            'bkashagent', 'agentbkash' => 'bKash Agent',
+            'rocket', 'dbbl', 'dutchbanglabank', 'dutchbanglabanklimited' => 'DBBL',
+            'skitto', 'skito' => 'Skito',
+            default => null,
+        };
+    }
+
+    protected function collectOperatorReportHistory($startDate, $endDate)
+    {
+        $regularRequests = collect();
+
+        if (Schema::hasTable('regular_requests')) {
+            $regularRequestsQuery = \DB::table('regular_requests')
+                ->join('users', 'regular_requests.user_id', '=', 'users.id')
+                ->select('regular_requests.*', 'users.name as user_name', 'users.main_bal');
+
+            if (Schema::hasTable('regular_packages')) {
+                $regularRequestsQuery
+                    ->leftJoin('regular_packages', 'regular_requests.package_id', '=', 'regular_packages.id')
+                    ->addSelect('regular_packages.price as package_price', 'regular_packages.name as package_name');
+            } else {
+                $regularRequestsQuery
+                    ->addSelect(\DB::raw('NULL as package_price'))
+                    ->addSelect(\DB::raw('NULL as package_name'));
+            }
+
+            $regularRequests = $regularRequestsQuery
+                ->whereIn('regular_requests.status', ['approved', 'rejected', 'cancelled'])
+                ->whereBetween('regular_requests.created_at', [$startDate, $endDate])
+                ->orderBy('regular_requests.created_at', 'desc')
+                ->get()
+                ->map(function ($item) {
+                    $status = 'success';
+                    if ($item->status === 'rejected') {
+                        $status = 'failed';
+                    } elseif ($item->status === 'cancelled') {
+                        $status = 'cancelled';
+                    }
+
+                    $description = $item->description ?? '';
+                    if (empty($description) && ! empty($item->package_name)) {
+                        $description = $item->package_name;
+                    } elseif (empty($description)) {
+                        $description = 'Internet Pack';
+                    }
+
+                    return (object) [
+                        'id' => $item->id,
+                        'user' => (object) ['name' => $item->user_name ?? 'N/A'],
+                        'user_id' => $item->user_id,
+                        'operator' => $item->operator ?? 'N/A',
+                        'mobile' => $item->mobile ?? '-',
+                        'amount' => $item->package_price ?? $item->amount ?? 0,
+                        'cost' => $item->amount ?? 0,
+                        'service' => 'internet',
+                        'status' => $status,
+                        'original_status' => $item->status,
+                        'balance' => $item->main_bal ?? 0,
+                        'trnx_id' => null,
+                        'description' => $description,
+                        'sim_balance' => null,
+                        'route' => null,
+                        'created_at' => $item->created_at,
+                    ];
+                });
+        }
+
+        $driveHistory = collect();
+
+        if (Schema::hasTable('drive_history')) {
+            $driveHistoryQuery = \DB::table('drive_history')
+                ->join('users', 'drive_history.user_id', '=', 'users.id')
+                ->select('drive_history.*', 'users.name as user_name', 'users.main_bal');
+
+            if (Schema::hasTable('drive_packages')) {
+                $driveHistoryQuery
+                    ->leftJoin('drive_packages', 'drive_history.package_id', '=', 'drive_packages.id')
+                    ->addSelect('drive_packages.price as package_price');
+            } else {
+                $driveHistoryQuery->addSelect(\DB::raw('NULL as package_price'));
+            }
+
+            $driveHistory = $driveHistoryQuery
+                ->whereBetween('drive_history.created_at', [$startDate, $endDate])
+                ->orderBy('drive_history.created_at', 'desc')
+                ->get()
+                ->map(function ($item) {
+                    return (object) [
+                        'id' => $item->id,
+                        'user' => (object) ['name' => $item->user_name ?? 'N/A'],
+                        'user_id' => $item->user_id,
+                        'operator' => $item->operator ?? 'N/A',
+                        'mobile' => $item->mobile ?? '-',
+                        'amount' => $item->package_price ?? $item->amount ?? 0,
+                        'cost' => $item->amount ?? 0,
+                        'service' => 'drive',
+                        'status' => $item->status ?? 'success',
+                        'original_status' => $item->status ?? 'success',
+                        'balance' => $item->main_bal ?? 0,
+                        'trnx_id' => null,
+                        'description' => $item->description,
+                        'sim_balance' => null,
+                        'route' => null,
+                        'created_at' => $item->created_at,
+                    ];
+                });
+        }
+
+        $regularRechargeHistory = Schema::hasTable('recharge_history')
+            ? \DB::table('recharge_history')
+            ->join('users', 'recharge_history.user_id', '=', 'users.id')
+            ->select('recharge_history.*', 'users.name as user_name', 'users.main_bal')
+            ->whereBetween('recharge_history.created_at', [$startDate, $endDate])
+            ->whereNotLike('recharge_history.type', 'Internet Pack%')
+            ->orderBy('recharge_history.created_at', 'desc')
+            ->get()
+            ->map(function ($item) {
+                $service = in_array($item->type, ['Bkash', 'Nagad', 'Rocket', 'Upay']) ? 'bkash' : 'regular';
+
+                return (object) [
+                    'id' => $item->id,
+                    'user' => (object) ['name' => $item->user_name ?? 'N/A'],
+                    'user_id' => $item->user_id,
+                    'operator' => $item->type ?? 'Regular',
+                    'mobile' => '-',
+                    'amount' => $item->amount ?? 0,
+                    'cost' => $item->amount ?? 0,
+                    'service' => $service,
+                    'status' => 'success',
+                    'original_status' => 'success',
+                    'balance' => $item->main_bal ?? 0,
+                    'trnx_id' => null,
+                    'description' => 'Recharge',
+                    'sim_balance' => null,
+                    'route' => null,
+                    'created_at' => $item->created_at,
+                ];
+            })
+            : collect();
+
+        $flexiHistory = Schema::hasTable('flexi_requests')
+            ? \DB::table('flexi_requests')
+            ->join('users', 'flexi_requests.user_id', '=', 'users.id')
+            ->select('flexi_requests.*', 'users.name as user_name', 'users.main_bal')
+            ->whereIn('flexi_requests.status', ['approved', 'rejected', 'cancelled'])
+            ->whereBetween('flexi_requests.created_at', [$startDate, $endDate])
+            ->orderBy('flexi_requests.created_at', 'desc')
+            ->get()
+            ->map(function ($item) {
+                $status = 'success';
+                if ($item->status === 'rejected') {
+                    $status = 'failed';
+                } elseif ($item->status === 'cancelled') {
+                    $status = 'cancelled';
+                }
+
+                return (object) [
+                    'id' => $item->id,
+                    'user' => (object) ['name' => $item->user_name ?? 'N/A'],
+                    'user_id' => $item->user_id,
+                    'operator' => $item->operator ?? 'Flexi',
+                    'mobile' => $item->mobile ?? '-',
+                    'amount' => $item->amount ?? 0,
+                    'cost' => $item->cost ?? $item->amount ?? 0,
+                    'service' => 'flexi',
+                    'status' => $status,
+                    'original_status' => $item->status,
+                    'balance' => $item->main_bal ?? 0,
+                    'trnx_id' => $item->trnx_id,
+                    'description' => trim(($item->type ?? 'Flexi') . ' Flexiload'),
+                    'sim_balance' => null,
+                    'route' => null,
+                    'created_at' => $item->created_at,
+                ];
+            })
+            : collect();
+
+        return $driveHistory
+            ->concat($regularRequests)
+            ->concat($regularRechargeHistory)
+            ->concat($flexiHistory)
+            ->sortByDesc('created_at')
+            ->values();
+    }
+
+    public function updateSecurityModual(Request $request)
+    {
+        if (! $this->securitySettingsSchemaReady()) {
+            return redirect()->route('admin.security.modual')
+                ->with('error', 'Security Modual settings columns are not ready. Please run php artisan migrate.');
+        }
+
+        HomepageSetting::firstOrCreate([])->update($this->validatedSecuritySettingsPayload($request));
+
+        return redirect()->route('admin.security.modual')
+            ->with('success', 'Security Modual settings updated successfully.');
+    }
+
     /**
      * Show service modules page.
      */
@@ -2611,54 +3481,90 @@ class AdminController extends Controller
             ->with('success', 'Service module updated successfully.');
     }
 
-    public function destroyServiceModule($serviceModule)
+    public function rechargeBlockList(Request $request)
     {
-        if (! Schema::hasTable('service_modules')) {
-            return redirect()->route('admin.service.modules')
-                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        $settings = HomepageSetting::first();
+        $operators = Operator::all();
+        $rechargeBlockListSchemaReady = Schema::hasTable('recharge_block_lists');
+        $rechargeBlockLists = collect();
+        $rechargeBlockServiceOptions = $this->rechargeBlockServiceOptions();
+        $rechargeBlockOperatorOptions = $this->rechargeBlockOperatorOptions($operators);
+
+        if ($rechargeBlockListSchemaReady) {
+            $rechargeBlockLists = RechargeBlockList::query()
+                ->orderBy('service')
+                ->orderBy('operator')
+                ->orderBy('amount')
+                ->get();
         }
 
-        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
-        $serviceModule->delete();
+        $pendingCount = $this->pendingRequestCount();
+        $totalAmount = 0;
+        $totalUsers = 0;
+        $today = 0;
+        $yesterday = 0;
+        $balanceToday = 0;
+        $balanceYesterday = 0;
+        $operatorSales = collect();
+        $bankingSales = collect();
 
-        return redirect()->route('admin.service.modules')
-            ->with('success', 'Service module deleted successfully.');
+        return view('admin', compact(
+            'settings',
+            'operators',
+            'rechargeBlockListSchemaReady',
+            'rechargeBlockLists',
+            'rechargeBlockServiceOptions',
+            'rechargeBlockOperatorOptions',
+            'pendingCount',
+            'totalAmount',
+            'totalUsers',
+            'today',
+            'yesterday',
+            'balanceToday',
+            'balanceYesterday',
+            'operatorSales',
+            'bankingSales'
+        ));
     }
 
-    public function toggleServiceModuleStatus($serviceModule)
+    public function storeRechargeBlockList(Request $request)
     {
-        if (! Schema::hasTable('service_modules')) {
-            return redirect()->route('admin.service.modules')
-                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        if (! Schema::hasTable('recharge_block_lists')) {
+            return redirect()->route('admin.recharge.block.list')
+                ->with('error', 'Recharge Block List table not ready. Please run php artisan migrate.');
         }
 
-        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
-        $serviceModule->update([
-            'status' => $serviceModule->status === 'active' ? 'deactive' : 'active',
-        ]);
+        $payload = $this->validatedRechargeBlockListPayload($request);
 
-        return redirect()->route('admin.service.modules')
-            ->with('success', 'Service module status updated successfully.');
+        $alreadyExists = RechargeBlockList::query()
+            ->where('service', $payload['service'])
+            ->where('operator', $payload['operator'])
+            ->where('amount', $payload['amount'])
+            ->exists();
+
+        if ($alreadyExists) {
+            return redirect()->route('admin.recharge.block.list')
+                ->with('error', 'This recharge block entry already exists.');
+        }
+
+        RechargeBlockList::query()->create($payload);
+
+        return redirect()->route('admin.recharge.block.list')
+            ->with('success', 'Recharge block entry created successfully.');
     }
 
-    public function updateServiceModuleSortOrder(Request $request, $serviceModule)
+    public function destroyRechargeBlockList($rechargeBlockList)
     {
-        if (! Schema::hasTable('service_modules')) {
-            return redirect()->route('admin.service.modules')
-                ->with('error', 'Service Modules table not ready. Please run php artisan migrate.');
+        if (! Schema::hasTable('recharge_block_lists')) {
+            return redirect()->route('admin.recharge.block.list')
+                ->with('error', 'Recharge Block List table not ready. Please run php artisan migrate.');
         }
 
-        $serviceModule = $this->findServiceModuleOrFail($serviceModule);
-        $validated = $request->validate([
-            'sort_order' => ['required', 'integer', 'min:0'],
-        ]);
+        $rechargeBlockList = $this->findRechargeBlockListOrFail($rechargeBlockList);
+        $rechargeBlockList->delete();
 
-        $serviceModule->update([
-            'sort_order' => $validated['sort_order'],
-        ]);
-
-        return redirect()->route('admin.service.modules')
-            ->with('success', 'Service module sort order updated successfully.');
+        return redirect()->route('admin.recharge.block.list')
+            ->with('success', 'Recharge block entry deleted successfully.');
     }
 
     /**

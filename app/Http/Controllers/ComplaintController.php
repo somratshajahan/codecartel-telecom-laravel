@@ -2,8 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\Complaint;
+use App\Services\SecurityRuntimeService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class ComplaintController extends Controller
@@ -11,9 +12,17 @@ class ComplaintController extends Controller
     // User: View complaints
     public function index(Request $request)
     {
+        $securityRuntime = app(SecurityRuntimeService::class);
+
+        if (! $securityRuntime->isSupportTicketEnabled()) {
+            return redirect()
+                ->route('dashboard')
+                ->with('error', $securityRuntime->supportTicketDisabledMessage());
+        }
+
         $settings = \App\Models\HomepageSetting::first();
         $user = auth()->user();
-        
+
         $pendingDriveRequests = \App\Models\DriveRequest::where('user_id', $user->id)
             ->where('status', 'pending')
             ->count();
@@ -30,7 +39,7 @@ class ComplaintController extends Controller
 
         if ($request->filled('search')) {
             $query->where('subject', 'like', '%' . $request->search . '%')
-                  ->orWhere('message', 'like', '%' . $request->search . '%');
+                ->orWhere('message', 'like', '%' . $request->search . '%');
         }
 
         if ($request->filled('status') && $request->status != '--Any--') {
@@ -38,8 +47,8 @@ class ComplaintController extends Controller
         }
 
         $complaints = $query->where('sender_email', Auth::user()->email)
-                            ->latest()
-                            ->get();
+            ->latest()
+            ->get();
 
         return view('complaints', compact('complaints', 'settings', 'user', 'pendingCount'));
     }
@@ -47,6 +56,14 @@ class ComplaintController extends Controller
     // User: Submit new complaint
     public function store(Request $request)
     {
+        $securityRuntime = app(SecurityRuntimeService::class);
+
+        if (! $securityRuntime->isSupportTicketEnabled()) {
+            return redirect()
+                ->route('dashboard')
+                ->with('error', $securityRuntime->supportTicketDisabledMessage());
+        }
+
         $request->validate([
             'subject' => 'required|string|max:255',
             'message' => 'required|string',
@@ -61,7 +78,7 @@ class ComplaintController extends Controller
                 'subject'      => $request->subject,
                 'message'      => $request->message,
                 'sender_email' => Auth::user()->email,
-                'status'       => 'Open',             
+                'status'       => 'Open',
             ]);
 
             return back()->with('success', 'Your complaint has been submitted successfully. Complaint Number: ' . $complaintNumber);
@@ -74,7 +91,7 @@ class ComplaintController extends Controller
     public function adminIndex(Request $request)
     {
         $settings = \App\Models\HomepageSetting::first();
-        
+
         $query = Complaint::query();
 
         if ($request->filled('complaint_id')) {
@@ -83,8 +100,8 @@ class ComplaintController extends Controller
 
         if ($request->filled('search')) {
             $query->where('subject', 'like', '%' . $request->search . '%')
-                  ->orWhere('message', 'like', '%' . $request->search . '%')
-                  ->orWhere('sender_email', 'like', '%' . $request->search . '%');
+                ->orWhere('message', 'like', '%' . $request->search . '%')
+                ->orWhere('sender_email', 'like', '%' . $request->search . '%');
         }
 
         if ($request->filled('status') && $request->status != '--Any--') {
@@ -116,4 +133,3 @@ class ComplaintController extends Controller
         }
     }
 }
-

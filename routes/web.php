@@ -3,11 +3,13 @@
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use App\Models\ApiDomain;
 use App\Models\HomepageSetting;
 use App\Models\ManualPaymentRequest;
+use App\Models\RechargeBlockList;
 use App\Http\Controllers\Admin\DeviceLogController;
 use App\Http\Controllers\HomepageController;
 use App\Http\Controllers\AuthPageController;
@@ -19,6 +21,7 @@ use App\Http\Controllers\ApiController;
 use App\Http\Controllers\Admin\NoticeController;
 use App\Services\GoogleOtpService;
 use App\Services\FirebasePushNotificationService;
+use App\Services\SecurityRuntimeService;
 
 
 $normalizeFlexiOperatorName = static function (?string $value): string {
@@ -62,6 +65,37 @@ $resolveFlexiOperatorFromMobile = static function (string $mobile, array $operat
     }
 
     return null;
+};
+
+$normalizeRechargeBlockOperator = static function (?string $value): string {
+    $normalized = strtoupper(preg_replace('/[^A-Z0-9]/i', '', (string) $value));
+
+    return match ($normalized) {
+        'GRAMEENPHONE', 'GP' => 'GP',
+        'ROBI', 'RB' => 'RB',
+        'AIRTEL', 'AT' => 'AT',
+        'BANGLALINK', 'BL' => 'BL',
+        'TELETALK', 'TT' => 'TT',
+        default => substr($normalized, 0, 20),
+    };
+};
+
+$isRechargeAmountBlocked = static function (string $service, ?string $operator, $amount) use ($normalizeRechargeBlockOperator): bool {
+    if (! Schema::hasTable('recharge_block_lists')) {
+        return false;
+    }
+
+    $normalizedOperator = $normalizeRechargeBlockOperator($operator);
+
+    if ($normalizedOperator === '') {
+        return false;
+    }
+
+    return RechargeBlockList::query()
+        ->where('service', $service)
+        ->where('operator', $normalizedOperator)
+        ->where('amount', round((float) $amount, 2))
+        ->exists();
 };
 
 
@@ -431,17 +465,37 @@ Route::put('/admin/service-modules/{serviceModule}', [AdminController::class, 'u
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.service.modules.update');
 
-Route::post('/admin/service-modules/{serviceModule}/toggle', [AdminController::class, 'toggleServiceModuleStatus'])
+Route::get('/admin/recharge-block-list', [AdminController::class, 'rechargeBlockList'])
     ->middleware(['auth', 'admin', 'prevent.back'])
-    ->name('admin.service.modules.toggle');
+    ->name('admin.recharge.block.list');
 
-Route::post('/admin/service-modules/{serviceModule}/sort-order', [AdminController::class, 'updateServiceModuleSortOrder'])
+Route::post('/admin/recharge-block-list', [AdminController::class, 'storeRechargeBlockList'])
     ->middleware(['auth', 'admin', 'prevent.back'])
-    ->name('admin.service.modules.sort');
+    ->name('admin.recharge.block.list.store');
 
-Route::delete('/admin/service-modules/{serviceModule}', [AdminController::class, 'destroyServiceModule'])
+Route::delete('/admin/recharge-block-list/{rechargeBlockList}', [AdminController::class, 'destroyRechargeBlockList'])
     ->middleware(['auth', 'admin', 'prevent.back'])
-    ->name('admin.service.modules.destroy');
+    ->name('admin.recharge.block.list.destroy');
+
+Route::get('/admin/security-modual', [AdminController::class, 'securityModual'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.security.modual');
+
+Route::post('/admin/security-modual', [AdminController::class, 'updateSecurityModual'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.security.modual.update');
+
+Route::get('/admin/daily-reports', [AdminController::class, 'dailyReports'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.daily.reports');
+
+Route::get('/admin/operator-reports', [AdminController::class, 'operatorReports'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.operator.reports');
+
+Route::get('/admin/sales-report', [AdminController::class, 'salesReport'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.sales.report');
 
 Route::post('/admin/manage-drive-package/{operator}/store', [AdminController::class, 'storeDrivePackage'])
     ->middleware(['auth', 'admin', 'prevent.back'])
@@ -732,6 +786,18 @@ Route::post('/add-balance', function (Request $request) {
         'note' => ['nullable', 'string', 'max:1000'],
     ]);
 
+    $securityRuntime = app(SecurityRuntimeService::class);
+
+    if ($securityRuntime->hasRecentRequest('manual_payment_requests', (int) auth()->id())) {
+        $message = $securityRuntime->requestIntervalMessage();
+
+        return redirect()
+            ->route('user.add.balance')
+            ->withInput()
+            ->withErrors(['request' => $message])
+            ->with('error', $message);
+    }
+
     ManualPaymentRequest::create([
         'user_id' => auth()->id(),
         'method' => trim((string) $validated['method']),
@@ -787,7 +853,7 @@ Route::get('/flexiload', function (Request $request) use ($normalizeFlexiOperato
     return view('user-flexi', compact('settings', 'operators', 'selectedOperator', 'autoDetectedOperator', 'flexiRequests', 'operatorPrefixes'));
 })->middleware(['auth', 'prevent.back'])->name('user.flexi');
 
-Route::post('/flexiload', function (Request $request) use ($normalizeFlexiOperatorName, $resolveFlexiOperatorFromMobile) {
+Route::post('/flexiload', function (Request $request) use ($normalizeFlexiOperatorName, $resolveFlexiOperatorFromMobile, $isRechargeAmountBlocked) {
     $validated = $request->validate([
         'operator' => ['nullable', 'string', 'max:100'],
         'number' => ['required', 'regex:/^01[0-9]{9}$/'],
@@ -824,6 +890,17 @@ Route::post('/flexiload', function (Request $request) use ($normalizeFlexiOperat
 
     $user = auth()->user();
     $redirectOperator = $finalOperator['route_name'] ?? ($finalOperator['name'] ?? null);
+    $securityRuntime = app(SecurityRuntimeService::class);
+
+    if (! $securityRuntime->isOperatorAllowed($finalOperator['route_name'] ?? ($finalOperator['name'] ?? null))) {
+        $message = $securityRuntime->operatorBlockedMessage();
+
+        return redirect()
+            ->route('user.flexi', array_filter(['operator' => $redirectOperator]))
+            ->withInput($request->except('pin'))
+            ->withErrors(['operator' => $message])
+            ->with('error', $message);
+    }
 
     if (! ($user->pin ?? null) || ! Hash::check($validated['pin'], $user->pin)) {
         return redirect()
@@ -834,11 +911,28 @@ Route::post('/flexiload', function (Request $request) use ($normalizeFlexiOperat
 
     $amount = (int) $validated['amount'];
 
+    if ($isRechargeAmountBlocked('Flexiload', $finalOperator['short_code'] ?? ($finalOperator['name'] ?? null), $amount)) {
+        return redirect()
+            ->route('user.flexi', array_filter(['operator' => $redirectOperator]))
+            ->withInput($request->except('pin'))
+            ->withErrors(['amount' => 'This recharge amount is blocked.']);
+    }
+
     if ((float) ($user->main_bal ?? 0) < $amount) {
         return redirect()
             ->route('user.flexi', array_filter(['operator' => $redirectOperator]))
             ->withInput($request->except('pin'))
             ->withErrors(['amount' => 'Insufficient main balance.']);
+    }
+
+    if ($securityRuntime->hasRecentRequest('flexi_requests', (int) $user->id)) {
+        $message = $securityRuntime->requestIntervalMessage();
+
+        return redirect()
+            ->route('user.flexi', array_filter(['operator' => $redirectOperator]))
+            ->withInput($request->except('pin'))
+            ->withErrors(['request' => $message])
+            ->with('error', $message);
     }
 
     \Illuminate\Support\Facades\DB::transaction(function () use ($user, $validated, $finalOperator, $amount) {
@@ -902,15 +996,16 @@ Route::get('/internet-packs/{operator}/confirm/{package}', function ($operator, 
     return view('user-internet-confirm', compact('settings', 'operator', 'package', 'mobile', 'pin'));
 })->middleware(['auth', 'prevent.back', 'permission:internet'])->name('user.internet.confirm');
 
-Route::post('/internet-packs/{operator}/buy/{package}', function (Request $request, $operator, $package) {
+Route::post('/internet-packs/{operator}/buy/{package}', function (Request $request, $operator, $package) use ($isRechargeAmountBlocked) {
     $packageData = \App\Models\RegularPackage::findOrFail($package);
+    $securityRuntime = app(SecurityRuntimeService::class);
     $validated = $request->validate([
         'mobile' => ['required', 'regex:/^01[0-9]{9}$/'],
         'pin' => ['required', 'digits:4'],
     ]);
 
     $mobile = $validated['mobile'];
-    $amount = $packageData->price - $packageData->commission;
+    $amount = round((float) ($packageData->price - $packageData->commission), 2);
 
     $operatorKey = strtolower(preg_replace('/[^a-z]/i', '', $operator));
     $prefixesByOperator = [
@@ -932,6 +1027,20 @@ Route::post('/internet-packs/{operator}/buy/{package}', function (Request $reque
         ], 422);
     }
 
+    if (! $securityRuntime->isOperatorAllowed($packageData->operator ?? $operator)) {
+        return response()->json([
+            'success' => false,
+            'message' => $securityRuntime->operatorBlockedMessage(),
+        ], 422);
+    }
+
+    if ($isRechargeAmountBlocked('InternetPack', $packageData->operator ?? $operator, $amount)) {
+        return response()->json([
+            'success' => false,
+            'message' => 'This recharge amount is blocked.',
+        ], 422);
+    }
+
     $user = auth()->user();
 
     if (!($user->pin ?? null) || !Hash::check($validated['pin'], $user->pin)) {
@@ -940,6 +1049,13 @@ Route::post('/internet-packs/{operator}/buy/{package}', function (Request $reque
 
     if (($user->main_bal ?? 0) < $amount) {
         return response()->json(['success' => false, 'message' => 'Insufficient main balance'], 422);
+    }
+
+    if ($securityRuntime->hasRecentRequest('regular_requests', (int) $user->id)) {
+        return response()->json([
+            'success' => false,
+            'message' => $securityRuntime->requestIntervalMessage(),
+        ], 422);
     }
 
     \App\Models\RegularRequest::create([
@@ -1128,10 +1244,11 @@ Route::put('/profile', function (Request $request) {
 
 Route::put('/profile/password', function (Request $request) {
     $user = Auth::user();
+    $securityRuntime = app(SecurityRuntimeService::class);
 
     $validated = $request->validate([
         'current_password' => ['required'],
-        'new_password' => ['required', 'min:6', 'confirmed'],
+        'new_password' => $securityRuntime->passwordRules(),
     ]);
 
     if (!Hash::check($validated['current_password'], $user->password)) {
@@ -1139,6 +1256,7 @@ Route::put('/profile/password', function (Request $request) {
     }
 
     $user->password = Hash::make($validated['new_password']);
+    $user->password_changed_at = now();
     $user->save();
 
     return redirect()->route('user.profile')->with('success', 'Password updated successfully!');
@@ -1157,6 +1275,7 @@ Route::put('/profile/pin', function (Request $request) {
     }
 
     $user->pin = Hash::make($validated['new_pin']);
+    $user->pin_changed_at = now();
     $user->save();
 
     return redirect()->route('user.profile')->with('success', 'PIN updated successfully!');
@@ -1273,6 +1392,7 @@ Route::delete('/profile/picture', function () {
 
 Route::post('/drive-offers/{operator}/buy/{package}', function (Request $request, $operator, $package) {
     $packageData = \App\Models\DrivePackage::findOrFail($package);
+    $securityRuntime = app(SecurityRuntimeService::class);
     $validated = $request->validate([
         'mobile' => ['required', 'regex:/^01[0-9]{9}$/'],
         'pin' => ['required', 'digits:4'],
@@ -1286,12 +1406,23 @@ Route::post('/drive-offers/{operator}/buy/{package}', function (Request $request
     $balanceType = (($branding->drive_balance ?? 'on') === 'off') ? 'main_bal' : 'drive_bal';
     $balanceLabel = $balanceType === 'main_bal' ? 'main balance' : 'drive balance';
 
+    if (! $securityRuntime->isOperatorAllowed($operator)) {
+        return response()->json(['success' => false, 'message' => $securityRuntime->operatorBlockedMessage()], 422);
+    }
+
     if (!($user->pin ?? null) || !Hash::check($validated['pin'], $user->pin)) {
         return response()->json(['success' => false, 'message' => 'Invalid PIN'], 422);
     }
 
     if (($user->{$balanceType} ?? 0) < $amount) {
         return response()->json(['success' => false, 'message' => 'Insufficient ' . $balanceLabel], 422);
+    }
+
+    if ($securityRuntime->hasRecentRequest('drive_requests', (int) $user->id)) {
+        return response()->json([
+            'success' => false,
+            'message' => $securityRuntime->requestIntervalMessage(),
+        ], 422);
     }
 
     // Create drive request
