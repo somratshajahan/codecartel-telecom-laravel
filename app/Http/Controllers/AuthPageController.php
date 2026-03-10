@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DepositSetting;
 use App\Models\HomepageSetting;
 use App\Models\User;
 use App\Services\DeviceApprovalService;
@@ -11,6 +12,7 @@ use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 
 class AuthPageController extends Controller
 {
@@ -63,6 +65,14 @@ class AuthPageController extends Controller
             ])->withInput($request->except(['password', 'pin', 'captcha']));
         }
 
+        $settings = HomepageSetting::first();
+
+        if ($recaptchaError = $this->recaptchaError($request, $settings)) {
+            return back()->withErrors([
+                'g-recaptcha-response' => $recaptchaError,
+            ])->withInput($request->except(['password', 'pin', 'captcha', 'g-recaptcha-response']));
+        }
+
         $remember = $request->boolean('remember');
         $user = User::query()->where('email', $credentials['email'])->first();
 
@@ -88,8 +98,6 @@ class AuthPageController extends Controller
                 'email' => 'Your account has been deactivated. Please contact support.',
             ])->withInput($request->except(['password', 'pin']));
         }
-
-        $settings = HomepageSetting::first();
 
         if ($settings?->google_otp_enabled && $user->google_otp_enabled) {
             $request->session()->put(self::OTP_LOGIN_SESSION_KEY, [
@@ -236,6 +244,12 @@ class AuthPageController extends Controller
             'otp' => ['required', 'digits:6'],
         ]);
 
+        if ($recaptchaError = $this->recaptchaError($request, HomepageSetting::first())) {
+            return back()->withErrors([
+                'g-recaptcha-response' => $recaptchaError,
+            ])->withInput($request->except(['password', 'password_confirmation', 'pin', 'otp', 'g-recaptcha-response']));
+        }
+
         // Verify OTP
         if (!$this->otpService->verifyOtp($validated['email'], $validated['otp'], 'registration')) {
             return back()->withErrors(['otp' => 'Invalid or expired OTP.'])->withInput();
@@ -251,6 +265,7 @@ class AuthPageController extends Controller
             'is_admin' => false,
             'is_active' => true,
             'level' => $validated['level'],
+            'main_bal' => DepositSetting::selfOpeningBalance($validated['level']),
         ]);
 
         Auth::login($user);
@@ -329,5 +344,41 @@ class AuthPageController extends Controller
         ]);
 
         return redirect()->route('login')->with('success', 'Password reset successfully. Please login.');
+    }
+
+    protected function recaptchaEnabled(?HomepageSetting $settings): bool
+    {
+        return ($settings?->security_recaptcha === 'enable')
+            && filled($settings?->recaptcha_site_key)
+            && filled($settings?->recaptcha_secret_key);
+    }
+
+    protected function recaptchaError(Request $request, ?HomepageSetting $settings): ?string
+    {
+        if (! $this->recaptchaEnabled($settings)) {
+            return null;
+        }
+
+        $token = trim((string) $request->input('g-recaptcha-response', ''));
+
+        if ($token === '') {
+            return 'Please complete the reCAPTCHA verification.';
+        }
+
+        try {
+            $response = Http::asForm()
+                ->timeout(10)
+                ->post('https://www.google.com/recaptcha/api/siteverify', [
+                    'secret' => (string) $settings->recaptcha_secret_key,
+                    'response' => $token,
+                    'remoteip' => $request->ip(),
+                ]);
+        } catch (\Throwable $exception) {
+            return 'Unable to verify reCAPTCHA right now. Please try again.';
+        }
+
+        return $response->successful() && $response->json('success')
+            ? null
+            : 'reCAPTCHA verification failed. Please try again.';
     }
 }

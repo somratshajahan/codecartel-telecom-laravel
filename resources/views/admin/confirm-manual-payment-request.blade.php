@@ -1,16 +1,22 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Confirm Manual Payment Request - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
-        <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
+    <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
 </head>
+
 <body class="min-h-screen bg-base-200 flex items-center justify-center">
     <div class="container mx-auto p-6 max-w-2xl">
         <div class="card bg-base-100 shadow-2xl">
@@ -23,9 +29,9 @@
                         <div class="flex justify-between"><span class="font-semibold">User:</span><span>{{ $request->user->name }}</span></div>
                         <div class="flex justify-between"><span class="font-semibold">Method:</span><span class="badge badge-primary">{{ $request->method }}</span></div>
                         <div class="flex justify-between"><span class="font-semibold">Sender Number:</span><span>{{ $request->sender_number }}</span></div>
-                        <div class="flex justify-between"><span class="font-semibold">Transaction ID:</span><span>{{ $request->transaction_id }}</span></div>
+                        <div class="flex justify-between gap-4"><span class="font-semibold">Request Type:</span><span class="text-right">{{ $request->note ?: 'N/A' }}</span></div>
+                        <div class="flex justify-between"><span class="font-semibold">Trnx:</span><span>{{ $request->transaction_id }}</span></div>
                         <div class="flex justify-between"><span class="font-semibold">Amount:</span><span class="text-primary font-bold">৳{{ number_format($request->amount, 2) }}</span></div>
-                        <div class="flex justify-between gap-4"><span class="font-semibold">User Note:</span><span class="text-right">{{ $request->note ?: 'N/A' }}</span></div>
                     </div>
                 </div>
                 <form method="POST" action="/admin/manual-payment-requests/{{ $request->id }}/confirm">
@@ -49,4 +55,5 @@
         </div>
     </div>
 </body>
+
 </html>

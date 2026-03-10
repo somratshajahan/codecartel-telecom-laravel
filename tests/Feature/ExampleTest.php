@@ -2,15 +2,19 @@
 
 namespace Tests\Feature;
 
+use App\Models\DepositSetting;
+use App\Models\SslCommerzTransaction;
 use App\Models\User;
 use App\Services\DeviceApprovalService;
 use App\Services\FirebasePushNotificationService;
 use App\Services\GoogleOtpService;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ExampleTest extends TestCase
@@ -24,6 +28,7 @@ class ExampleTest extends TestCase
         Schema::dropIfExists('site_notices');
         Schema::dropIfExists('operators');
         Schema::dropIfExists('homepage_settings');
+        Schema::dropIfExists('branding_slides');
         Schema::dropIfExists('brandings');
         Schema::dropIfExists('device_logs');
         Schema::dropIfExists('flexi_requests');
@@ -34,6 +39,8 @@ class ExampleTest extends TestCase
         Schema::dropIfExists('api_domains');
         Schema::dropIfExists('service_modules');
         Schema::dropIfExists('recharge_block_lists');
+        Schema::dropIfExists('deposit_settings');
+        Schema::dropIfExists('sslcommerz_transactions');
         Schema::dropIfExists('otps');
         Schema::dropIfExists('users');
 
@@ -128,6 +135,11 @@ class ExampleTest extends TestCase
             $table->longText('firebase_service_account_json')->nullable();
             $table->boolean('google_otp_enabled')->default(false);
             $table->string('google_otp_issuer')->nullable();
+            $table->string('recaptcha_site_key')->nullable();
+            $table->text('recaptcha_secret_key')->nullable();
+            $table->text('tawk_property_id')->nullable();
+            $table->text('tawk_widget_id')->nullable();
+            $table->string('security_recaptcha')->default('disable');
             $table->string('security_ssl_https_redirect')->default('disable');
             $table->string('security_admin_login_captcha')->default('disable');
             $table->string('security_reseller_login_captcha')->default('disable');
@@ -175,6 +187,16 @@ class ExampleTest extends TestCase
             $table->string('amarpay_store_id')->nullable();
             $table->string('amarpay_signature_key')->nullable();
             $table->string('amarpay_mode')->nullable();
+            $table->string('alert_no')->nullable();
+            $table->string('whatsapp_link')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('branding_slides', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedTinyInteger('slot_number')->unique();
+            $table->string('image_path')->nullable();
+            $table->boolean('is_active')->default(true);
             $table->timestamps();
         });
 
@@ -258,6 +280,25 @@ class ExampleTest extends TestCase
 
         $response->assertOk();
         $response->assertSee('uploads/company-logo.png');
+    }
+
+    public function test_homepage_renders_tawk_widget_only_when_credentials_are_configured(): void
+    {
+        $this->get('/')
+            ->assertOk()
+            ->assertDontSee('https://embed.tawk.to/', false);
+
+        DB::table('homepage_settings')->insert([
+            'company_name' => 'Codecartel Telecom',
+            'tawk_property_id' => '67d1234567890abcdef1234',
+            'tawk_widget_id' => '1i1234567',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->get('/')
+            ->assertOk()
+            ->assertSee('https://embed.tawk.to/67d1234567890abcdef1234/1i1234567', false);
     }
 
     public function test_homepage_shows_provider_api_docs_section_and_nav_link(): void
@@ -619,6 +660,7 @@ class ExampleTest extends TestCase
             ->assertSee('My Pending Requests')
             ->assertSee('SL')
             ->assertSee('Flexi')
+            ->assertSee(route('user.all.history', ['type' => 'flexi']), false)
             ->assertSee('Prepaid')
             ->assertSee('Robi')
             ->assertSee('01812345678');
@@ -630,8 +672,6 @@ class ExampleTest extends TestCase
             ->assertSee('Flexi Pending User')
             ->assertSee('01812345678')
             ->assertSee('Prepaid')
-            ->assertSee('name="bulk_action"', false)
-            ->assertSee('id="pending-bulk-select-all"', false)
             ->assertDontSee('value="flexi:1"', false)
             ->assertSee('/admin/flexi-requests/1/approve', false)
             ->assertSee('/admin/flexi-requests/1/failed', false)
@@ -1229,7 +1269,9 @@ class ExampleTest extends TestCase
         $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.50'])
             ->get('/admin/login')
             ->assertOk()
-            ->assertSee('Device IP: 203.0.113.50');
+            ->assertSee('Device IP: 203.0.113.50')
+            ->assertSee('id="admin-password"', false)
+            ->assertSee('data-password-toggle="admin-password"', false);
     }
 
     public function test_user_login_page_shows_current_device_ip(): void
@@ -1237,7 +1279,19 @@ class ExampleTest extends TestCase
         $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.51'])
             ->get('/login')
             ->assertOk()
-            ->assertSee('Device IP: 203.0.113.51');
+            ->assertSee('Device IP: 203.0.113.51')
+            ->assertSee('id="login-password"', false)
+            ->assertSee('data-password-toggle="login-password"', false);
+    }
+
+    public function test_registration_page_renders_password_visibility_toggles(): void
+    {
+        $this->get('/register')
+            ->assertOk()
+            ->assertSee('id="register-password"', false)
+            ->assertSee('data-password-toggle="register-password"', false)
+            ->assertSee('id="register-password-confirmation"', false)
+            ->assertSee('data-password-toggle="register-password-confirmation"', false);
     }
 
     public function test_user_login_page_mentions_google_otp_next_step_when_enabled_globally(): void
@@ -1254,6 +1308,30 @@ class ExampleTest extends TestCase
             ->assertOk()
             ->assertSee('If Google OTP is enabled on your account')
             ->assertSee('next page');
+    }
+
+    public function test_auth_pages_render_recaptcha_widget_when_enabled_and_credentials_configured(): void
+    {
+        $this->setSecuritySettings([
+            'recaptcha_site_key' => 'site-key-123',
+            'recaptcha_secret_key' => 'secret-key-123',
+            'security_recaptcha' => 'enable',
+        ]);
+
+        $this->get('/login')
+            ->assertOk()
+            ->assertSee('g-recaptcha', false)
+            ->assertSee('site-key-123');
+
+        $this->get('/register')
+            ->assertOk()
+            ->assertSee('g-recaptcha', false)
+            ->assertSee('site-key-123');
+
+        $this->get('/admin/login')
+            ->assertOk()
+            ->assertSee('g-recaptcha', false)
+            ->assertSee('site-key-123');
     }
 
     public function test_admin_notice_page_loads_successfully(): void
@@ -1645,7 +1723,42 @@ class ExampleTest extends TestCase
             ->get('/admin/google-otp-config')
             ->assertOk()
             ->assertSee('Google OTP Configuration')
-            ->assertSee('Google Authenticator');
+            ->assertSee('Google Authenticator')
+            ->assertDontSee('Google reCAPTCHA Credentials')
+            ->assertDontSee('Tawk Widget Setup')
+            ->assertDontSee('Save Tawk Chat Credentials');
+    }
+
+    public function test_admin_recaptcha_config_page_loads_successfully(): void
+    {
+        $admin = new User();
+        $admin->forceFill([
+            'id' => 1021,
+            'name' => 'reCAPTCHA Admin',
+            'is_admin' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/recaptcha-config')
+            ->assertOk()
+            ->assertSee('Google reCAPTCHA Credentials')
+            ->assertSee('Security Modual');
+    }
+
+    public function test_admin_tawk_chat_config_page_loads_successfully(): void
+    {
+        $admin = new User();
+        $admin->forceFill([
+            'id' => 1022,
+            'name' => 'Tawk Admin',
+            'is_admin' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/tawk-chat-config')
+            ->assertOk()
+            ->assertSee('Tawk Chat Credentials')
+            ->assertSee('Homepage');
     }
 
     public function test_admin_can_update_google_otp_settings(): void
@@ -1666,6 +1779,50 @@ class ExampleTest extends TestCase
 
         $this->assertSame(1, DB::table('homepage_settings')->value('google_otp_enabled'));
         $this->assertSame('Codecartel Secure', DB::table('homepage_settings')->value('google_otp_issuer'));
+    }
+
+    public function test_admin_can_update_recaptcha_settings_from_dedicated_page(): void
+    {
+        $admin = new User();
+        $admin->forceFill([
+            'id' => 1031,
+            'name' => 'reCAPTCHA Settings Admin',
+            'is_admin' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->post(route('admin.recaptcha.update'), [
+                'recaptcha_site_key' => 'site-key-456',
+                'recaptcha_secret_key' => 'secret-key-456',
+            ])
+            ->assertRedirect(route('admin.recaptcha.config'));
+
+        $this->assertDatabaseHas('homepage_settings', [
+            'recaptcha_site_key' => 'site-key-456',
+            'recaptcha_secret_key' => 'secret-key-456',
+        ]);
+    }
+
+    public function test_admin_can_update_tawk_settings_from_dedicated_page(): void
+    {
+        $admin = new User();
+        $admin->forceFill([
+            'id' => 1032,
+            'name' => 'Tawk Settings Admin',
+            'is_admin' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->post(route('admin.tawk.update'), [
+                'tawk_property_id' => '67d1234567890abcdef1234',
+                'tawk_widget_id' => '1i1234567',
+            ])
+            ->assertRedirect(route('admin.tawk.config'));
+
+        $this->assertDatabaseHas('homepage_settings', [
+            'tawk_property_id' => '67d1234567890abcdef1234',
+            'tawk_widget_id' => '1i1234567',
+        ]);
     }
 
     public function test_admin_can_enable_and_disable_google_otp_from_admin_profile(): void
@@ -2078,6 +2235,41 @@ class ExampleTest extends TestCase
         $this->assertSame(500.0, (float) $user->fresh()->main_bal);
     }
 
+    public function test_provider_api_recharge_blocks_operator_when_it_is_off_in_security_settings(): void
+    {
+        $this->ensureFlexiRequestsTable();
+        $this->setSecuritySettings([
+            'security_gp' => 'on',
+            'security_robi' => 'on',
+            'security_banglalink' => 'on',
+            'security_airtel' => 'off',
+            'security_teletalk' => 'on',
+            'security_skitto' => 'on',
+        ]);
+
+        $user = $this->createLoginUser(1316, [
+            'name' => 'API Blocked Recharge User',
+            'email' => 'api-blocked-recharge-user@example.com',
+            'api_key' => 'BLOCKEDRECHARGEKEY1234567890BLOCKEDRECHARGE12',
+            'api_access_enabled' => true,
+            'main_bal' => 500,
+        ]);
+
+        $this->postJson('/api/v1/recharge', [
+            'api_key' => $user->api_key,
+            'operator' => 'Airtel',
+            'number' => '01612345678',
+            'amount' => 100,
+            'type' => 'Prepaid',
+        ])->assertStatus(422)->assertJson([
+            'status' => 'error',
+            'message' => 'This operator is currently unavailable.',
+        ]);
+
+        $this->assertDatabaseCount('flexi_requests', 0);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
     public function test_provider_api_drive_creates_pending_request_and_deducts_drive_balance(): void
     {
         $this->ensureProviderApiDriveTables();
@@ -2276,6 +2468,54 @@ class ExampleTest extends TestCase
         $this->assertSame(280.0, (float) $user->fresh()->main_bal);
     }
 
+    public function test_provider_api_internet_blocks_operator_when_it_is_off_in_security_settings(): void
+    {
+        $this->ensureProviderApiInternetTables();
+        $this->setSecuritySettings([
+            'security_gp' => 'on',
+            'security_robi' => 'off',
+            'security_banglalink' => 'on',
+            'security_airtel' => 'on',
+            'security_teletalk' => 'on',
+            'security_skitto' => 'on',
+        ]);
+
+        $user = $this->createLoginUser(1317, [
+            'name' => 'API Blocked Internet User',
+            'email' => 'api-blocked-internet-user@example.com',
+            'api_key' => 'BLOCKEDINTERNETKEY1234567890BLOCKEDINTERNET12',
+            'api_access_enabled' => true,
+            'api_services' => ['internet'],
+            'main_bal' => 500,
+        ]);
+
+        $packageId = DB::table('regular_packages')->insertGetId([
+            'operator' => 'Robi',
+            'name' => 'Blocked API Internet Package',
+            'price' => 250,
+            'commission' => 30,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->postJson('/api/v1/internet', [
+            'api_key' => $user->api_key,
+            'package_id' => $packageId,
+            'mobile' => '01812345678',
+        ])->assertStatus(422)->assertJson([
+            'status' => 'error',
+            'message' => 'This operator is currently unavailable.',
+        ]);
+
+        $this->assertDatabaseCount('regular_requests', 0);
+        $this->assertSame(500.0, (float) $user->fresh()->main_bal);
+    }
+
     public function test_provider_api_rejects_request_from_unlisted_domain_when_whitelist_exists(): void
     {
         $user = $this->createLoginUser(1311, [
@@ -2440,6 +2680,97 @@ class ExampleTest extends TestCase
         $this->assertAuthenticatedAs($user);
     }
 
+    public function test_user_login_requires_valid_recaptcha_when_enabled(): void
+    {
+        $this->setSecuritySettings([
+            'recaptcha_site_key' => 'site-key-login',
+            'recaptcha_secret_key' => 'secret-key-login',
+            'security_recaptcha' => 'enable',
+        ]);
+
+        $user = $this->createLoginUser(1052, [
+            'name' => 'reCAPTCHA User',
+            'email' => 'recaptcha-user@example.com',
+        ]);
+
+        Http::fake([
+            'https://www.google.com/recaptcha/api/siteverify' => Http::response(['success' => false], 200),
+        ]);
+
+        $this->from('/login')
+            ->post('/login', [
+                'email' => $user->email,
+                'password' => 'secret123',
+                'pin' => '1234',
+                'g-recaptcha-response' => 'invalid-token',
+            ])
+            ->assertRedirect('/login')
+            ->assertSessionHasErrors(['g-recaptcha-response']);
+
+        Http::assertSentCount(1);
+        $this->assertGuest();
+    }
+
+    public function test_user_login_succeeds_with_valid_recaptcha_when_enabled(): void
+    {
+        $this->setSecuritySettings([
+            'recaptcha_site_key' => 'site-key-login-success',
+            'recaptcha_secret_key' => 'secret-key-login-success',
+            'security_recaptcha' => 'enable',
+        ]);
+
+        $user = $this->createLoginUser(1053, [
+            'name' => 'reCAPTCHA Success User',
+            'email' => 'recaptcha-success-user@example.com',
+        ]);
+
+        Http::fake([
+            'https://www.google.com/recaptcha/api/siteverify' => Http::response(['success' => true], 200),
+        ]);
+
+        $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'secret123',
+            'pin' => '1234',
+            'g-recaptcha-response' => 'valid-token',
+        ])->assertRedirect('/dashboard');
+
+        Http::assertSentCount(1);
+        $this->assertAuthenticatedAs($user);
+    }
+
+    public function test_registration_requires_valid_recaptcha_when_enabled(): void
+    {
+        $this->setSecuritySettings([
+            'recaptcha_site_key' => 'site-key-register',
+            'recaptcha_secret_key' => 'secret-key-register',
+            'security_recaptcha' => 'enable',
+        ]);
+
+        Http::fake([
+            'https://www.google.com/recaptcha/api/siteverify' => Http::response(['success' => false], 200),
+        ]);
+
+        $this->from('/register')
+            ->post('/register', [
+                'name' => 'Register User',
+                'email' => 'register-recaptcha@example.com',
+                'password' => 'StrongPass123!',
+                'password_confirmation' => 'StrongPass123!',
+                'pin' => '1234',
+                'level' => 'seller',
+                'otp' => '123456',
+                'g-recaptcha-response' => 'invalid-register-token',
+            ])
+            ->assertRedirect('/register')
+            ->assertSessionHasErrors(['g-recaptcha-response']);
+
+        Http::assertSentCount(1);
+        $this->assertDatabaseMissing('users', [
+            'email' => 'register-recaptcha@example.com',
+        ]);
+    }
+
     public function test_user_login_succeeds_after_valid_google_otp_on_second_step(): void
     {
         DB::table('homepage_settings')->insert([
@@ -2564,6 +2895,38 @@ class ExampleTest extends TestCase
         $this->assertAuthenticatedAs($admin);
     }
 
+    public function test_admin_login_requires_valid_recaptcha_when_enabled(): void
+    {
+        $this->setSecuritySettings([
+            'recaptcha_site_key' => 'site-key-admin',
+            'recaptcha_secret_key' => 'secret-key-admin',
+            'security_recaptcha' => 'enable',
+        ]);
+
+        $admin = $this->createLoginUser(12082, [
+            'name' => 'reCAPTCHA Admin',
+            'email' => 'recaptcha-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        Http::fake([
+            'https://www.google.com/recaptcha/api/siteverify' => Http::response(['success' => false], 200),
+        ]);
+
+        $this->from('/admin/login')
+            ->post('/admin/login', [
+                'email' => $admin->email,
+                'password' => 'secret123',
+                'pin' => '1234',
+                'g-recaptcha-response' => 'invalid-admin-token',
+            ])
+            ->assertRedirect('/admin/login')
+            ->assertSessionHasErrors(['g-recaptcha-response']);
+
+        Http::assertSentCount(1);
+        $this->assertGuest();
+    }
+
     public function test_admin_login_succeeds_after_valid_google_otp_on_second_step(): void
     {
         DB::table('homepage_settings')->insert([
@@ -2650,7 +3013,71 @@ class ExampleTest extends TestCase
             ->assertSee('01700000000')
             ->assertSee('01900000000')
             ->assertSee('ssl-test-store')
-            ->assertSee('amar-store');
+            ->assertSee('amar-store')
+            ->assertSee('Use Sandbox Demo')
+            ->assertSee('Store ID:')
+            ->assertSee('testbox')
+            ->assertSee('qwerty')
+            ->assertSee('id="fill-sslcommerz-sandbox"', false)
+            ->assertSee('id="sslcommerz_mode"', false);
+    }
+
+    public function test_admin_deposit_page_loads_successfully(): void
+    {
+        $this->seedDepositSettings();
+
+        $admin = new User();
+        $admin->forceFill([
+            'id' => 111,
+            'name' => 'Deposit Admin',
+            'is_admin' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/deposit')
+            ->assertOk()
+            ->assertSee('Deposit Settings')
+            ->assertSee('Level Name')
+            ->assertSee('bKash(Main)')
+            ->assertSee('Rocket(Drive)')
+            ->assertSee('Retailer')
+            ->assertSee('Save Deposit Settings')
+            ->assertSee('name="deposit_levels[reseller1][bkash_main]"', false);
+    }
+
+    public function test_admin_can_update_deposit_settings(): void
+    {
+        $this->seedDepositSettings();
+
+        $admin = new User();
+        $admin->forceFill([
+            'id' => 113,
+            'name' => 'Deposit Update Admin',
+            'is_admin' => 1,
+        ]);
+
+        $payload = [];
+
+        foreach (DepositSetting::defaultRows() as $row) {
+            foreach (DepositSetting::editableColumns() as $column) {
+                $payload[$row['level']][$column] = $row[$column];
+            }
+        }
+
+        $payload['reseller1']['bkash_main'] = 5.5;
+        $payload['reseller3']['account_price'] = 25;
+        $payload['reseller1']['self_account_price'] = 40;
+
+        $this->actingAs($admin)
+            ->post(route('admin.deposit.update'), [
+                'deposit_levels' => $payload,
+            ])
+            ->assertRedirect(route('admin.deposit'))
+            ->assertSessionHas('success', 'Deposit settings updated successfully!');
+
+        $this->assertSame(5.5, (float) DB::table('deposit_settings')->where('level', 'reseller1')->value('bkash_main'));
+        $this->assertSame(25.0, (float) DB::table('deposit_settings')->where('level', 'reseller3')->value('account_price'));
+        $this->assertSame(40.0, (float) DB::table('deposit_settings')->where('level', 'reseller1')->value('self_account_price'));
     }
 
     public function test_admin_payment_gateway_settings_update_stores_gateway_credentials(): void
@@ -3365,6 +3792,7 @@ class ExampleTest extends TestCase
     {
         DB::table('brandings')->insert([
             'bkash' => '01700000000',
+            'nagad' => '01900000000',
             'rocket' => '01800000000',
             'created_at' => now(),
             'updated_at' => now(),
@@ -3383,7 +3811,150 @@ class ExampleTest extends TestCase
             ->assertOk()
             ->assertSee('Add Balance')
             ->assertSee('01700000000')
+            ->assertSee('01900000000')
             ->assertSee('01800000000');
+    }
+
+    public function test_add_balance_page_shows_sslcommerz_online_payment_when_configured(): void
+    {
+        DB::table('brandings')->insert([
+            'sslcommerz_store_id' => 'ssl-store-1',
+            'sslcommerz_store_password' => 'ssl-pass-1',
+            'sslcommerz_mode' => 'sandbox',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(605, [
+            'name' => 'SSL View User',
+            'email' => 'ssl-view-user@example.com',
+            'permissions' => ['add_balance'],
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('user.add.balance'))
+            ->assertOk()
+            ->assertSee('Pay with SSLCommerz')
+            ->assertSee('Instant Online Payment')
+            ->assertSee(route('user.add.balance.sslcommerz.start'), false);
+    }
+
+    public function test_add_balance_page_uses_dashboard_navbar_and_full_menu_layout(): void
+    {
+        DB::table('brandings')->insert([
+            'bkash' => '01700000000',
+            'nagad' => '01900000000',
+            'rocket' => '01800000000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(104, [
+            'name' => 'Layout User',
+            'email' => 'layout-user@example.com',
+            'permissions' => [
+                'add_balance',
+                'drive',
+                'internet',
+                'pending_requests',
+                'all_history',
+                'drive_history',
+                'profile',
+                'complaints',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('user.add.balance'))
+            ->assertOk()
+            ->assertSee('id="my-drawer"', false)
+            ->assertSee('Layout User')
+            ->assertSee(route('dashboard'), false)
+            ->assertSee(route('user.add.balance'), false)
+            ->assertSee(route('user.bkash'), false)
+            ->assertSee(route('user.nagad'), false)
+            ->assertSee(route('user.rocket'), false)
+            ->assertSee(route('user.flexi'), false)
+            ->assertSee(route('user.internet'), false)
+            ->assertSee(route('user.drive'), false)
+            ->assertSee(route('user.pending.requests'), false)
+            ->assertSee(route('user.all.history'), false)
+            ->assertSee(route('user.all.history', ['type' => 'flexi']), false)
+            ->assertSee(route('user.all.history', ['type' => 'bkash']), false)
+            ->assertSee(route('user.all.history', ['type' => 'nagad']), false)
+            ->assertSee(route('user.all.history', ['type' => 'rocket']), false)
+            ->assertSee(route('user.drive.history'), false)
+            ->assertSee(route('user.profile'), false)
+            ->assertSee(route('user.profile.google-otp'), false)
+            ->assertSee(route('user.profile.api'), false)
+            ->assertSee(route('complaints.index'), false)
+            ->assertSee('active bg-primary text-primary-content', false)
+            ->assertSee('Logout');
+    }
+
+    public function test_dedicated_manual_balance_pages_render_selected_method_context_and_switch_links(): void
+    {
+        DB::table('brandings')->insert([
+            'bkash' => '01700000000',
+            'nagad' => '01900000000',
+            'rocket' => '01800000000',
+            'upay' => '01600000000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(105, [
+            'name' => 'Dedicated Method User',
+            'email' => 'dedicated-method-user@example.com',
+            'permissions' => ['add_balance'],
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('user.bkash'))
+            ->assertOk()
+            ->assertSee('bKash Request')
+            ->assertSee('Send bKash')
+            ->assertSee('Last 10 Requests')
+            ->assertSee('Number')
+            ->assertSee('Amount')
+            ->assertSee('Type')
+            ->assertSee('User PIN')
+            ->assertSee('name="pin"', false)
+            ->assertSee('send')
+            ->assertSee('Payment Number: 01700000000')
+            ->assertSee('name="redirect_route" value="user.bkash"', false)
+            ->assertSee('name="method" value="Bkash"', false);
+
+        $this->actingAs($user)
+            ->get(route('user.nagad'))
+            ->assertOk()
+            ->assertSee('Nagad Request')
+            ->assertSee('Send Nagad')
+            ->assertSee('Last 10 Requests')
+            ->assertSee('User PIN')
+            ->assertSee('name="redirect_route" value="user.nagad"', false)
+            ->assertSee('name="method" value="Nagad"', false);
+
+        $this->actingAs($user)
+            ->get(route('user.rocket'))
+            ->assertOk()
+            ->assertSee('Rocket Request')
+            ->assertSee('Send Rocket')
+            ->assertSee('Last 10 Requests')
+            ->assertSee('User PIN')
+            ->assertSee('name="redirect_route" value="user.rocket"', false)
+            ->assertSee('name="method" value="Rocket"', false);
+
+        $this->actingAs($user)
+            ->get(route('user.upay'))
+            ->assertOk()
+            ->assertSee('Upay Request')
+            ->assertSee('Send Upay')
+            ->assertSee('Last 10 Requests')
+            ->assertSee('User PIN')
+            ->assertSee('Payment Number: 01600000000')
+            ->assertSee('name="redirect_route" value="user.upay"', false)
+            ->assertSee('name="method" value="Upay"', false);
     }
 
     public function test_authenticated_user_can_submit_manual_payment_request_and_see_it_in_recent_history(): void
@@ -3400,35 +3971,384 @@ class ExampleTest extends TestCase
         $user = $this->createLoginUser(601, [
             'name' => 'Manual Request User',
             'email' => 'manual-request-user@example.com',
+            'permissions' => ['add_balance'],
         ]);
 
         $this->actingAs($user)
             ->post('/add-balance', [
                 'method' => 'Bkash',
+                'redirect_route' => 'user.bkash',
                 'sender_number' => '01712345678',
-                'transaction_id' => 'MANUAL-TX-001',
-                'amount' => '250',
-                'note' => 'Paid from personal account',
+                'amount' => '500',
+                'type' => 'Cash IN',
+                'pin' => '1234',
             ])
-            ->assertRedirect('/add-balance')
+            ->assertRedirect(route('user.bkash'))
+            ->assertSessionHas('success');
+
+        $manualRequest = DB::table('manual_payment_requests')
+            ->where('user_id', $user->id)
+            ->where('method', 'Bkash')
+            ->where('sender_number', '01712345678')
+            ->first();
+
+        $this->assertNotNull($manualRequest);
+        $this->assertSame('Cash IN', $manualRequest->note);
+        $this->assertSame('pending', $manualRequest->status);
+        $this->assertSame(500.0, (float) $manualRequest->amount);
+        $this->assertTrue(str_starts_with($manualRequest->transaction_id, 'MB-'));
+
+        $this->actingAs($user)
+            ->get(route('user.bkash'))
+            ->assertOk()
+            ->assertSee('bKash Request')
+            ->assertSee('Send bKash')
+            ->assertSee('Last 10 Requests')
+            ->assertSee('Trnx')
+            ->assertSee('User PIN')
+            ->assertSee('name="redirect_route" value="user.bkash"', false)
+            ->assertSee('name="method" value="Bkash"', false)
+            ->assertSee($manualRequest->transaction_id)
+            ->assertSee('Pending');
+    }
+
+    public function test_manual_payment_request_requires_valid_user_pin(): void
+    {
+        $this->ensureManualPaymentRequestsTable();
+
+        $user = $this->createLoginUser(602, [
+            'name' => 'Manual Request Pin User',
+            'email' => 'manual-request-pin-user@example.com',
+            'permissions' => ['add_balance'],
+        ]);
+
+        $this->actingAs($user)
+            ->from(route('user.bkash'))
+            ->post(route('user.add.balance.submit'), [
+                'method' => 'Bkash',
+                'redirect_route' => 'user.bkash',
+                'sender_number' => '01712345678',
+                'amount' => '500',
+                'type' => 'Cash IN',
+                'pin' => '9999',
+            ])
+            ->assertRedirect(route('user.bkash'))
+            ->assertSessionHasErrors(['pin']);
+
+        $this->assertDatabaseCount('manual_payment_requests', 0);
+    }
+
+    public function test_dedicated_manual_page_allows_request_submit_without_configured_number(): void
+    {
+        $this->ensureManualPaymentRequestsTable();
+
+        $user = $this->createLoginUser(611, [
+            'name' => 'Unconfigured Bkash User',
+            'email' => 'unconfigured-bkash-user@example.com',
+            'permissions' => ['add_balance'],
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('user.bkash'))
+            ->assertOk()
+            ->assertSee('bKash Request')
+            ->assertSee('Send bKash')
+            ->assertDontSee('configure করা হয়নি')
+            ->assertSee('name="redirect_route" value="user.bkash"', false)
+            ->assertSee('name="method" value="Bkash"', false);
+
+        $this->actingAs($user)
+            ->post(route('user.add.balance.submit'), [
+                'method' => 'Bkash',
+                'redirect_route' => 'user.bkash',
+                'sender_number' => '01712345678',
+                'amount' => '500',
+                'type' => 'Cash IN',
+                'pin' => '1234',
+            ])
+            ->assertRedirect(route('user.bkash'))
             ->assertSessionHas('success');
 
         $this->assertDatabaseHas('manual_payment_requests', [
             'user_id' => $user->id,
             'method' => 'Bkash',
             'sender_number' => '01712345678',
-            'transaction_id' => 'MANUAL-TX-001',
-            'amount' => 250,
+            'amount' => 500,
+            'note' => 'Cash IN',
             'status' => 'pending',
+        ]);
+    }
+
+    public function test_sslcommerz_start_route_creates_pending_transaction_and_redirects_to_gateway(): void
+    {
+        $this->ensureSslCommerzTransactionsTable();
+
+        DB::table('brandings')->insert([
+            'sslcommerz_store_id' => 'store-start-1',
+            'sslcommerz_store_password' => 'pass-start-1',
+            'sslcommerz_mode' => 'sandbox',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(606, [
+            'name' => 'SSL Start User',
+            'email' => 'ssl-start-user@example.com',
+            'permissions' => ['add_balance'],
+        ]);
+
+        Http::fake([
+            'https://sandbox.sslcommerz.com/gwprocess/v4/api.php' => Http::response([
+                'status' => 'SUCCESS',
+                'sessionkey' => 'SESSION-START-1',
+                'GatewayPageURL' => 'https://sandbox.sslcommerz.com/EasyCheckOut/test-gateway',
+            ], 200),
         ]);
 
         $this->actingAs($user)
-            ->get('/add-balance')
+            ->post(route('user.add.balance.sslcommerz.start'), [
+                'sslcommerz_amount' => '250',
+            ])
+            ->assertRedirect('https://sandbox.sslcommerz.com/EasyCheckOut/test-gateway');
+
+        $transaction = SslCommerzTransaction::query()->first();
+
+        $this->assertNotNull($transaction);
+        $this->assertSame($user->id, $transaction->user_id);
+        $this->assertSame('pending', $transaction->status);
+        $this->assertSame('SESSION-START-1', $transaction->session_key);
+        $this->assertSame('https://sandbox.sslcommerz.com/EasyCheckOut/test-gateway', $transaction->gateway_url);
+        $this->assertSame('250.00', number_format((float) $transaction->amount, 2, '.', ''));
+
+        Http::assertSentCount(1);
+        Http::assertSent(function (\Illuminate\Http\Client\Request $request) {
+            return $request->url() === 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php'
+                && (($request->data()['store_id'] ?? null) === 'store-start-1')
+                && (($request->data()['store_passwd'] ?? null) === 'pass-start-1')
+                && (($request->data()['success_url'] ?? null) === route('user.add.balance.sslcommerz.success'))
+                && (($request->data()['fail_url'] ?? null) === route('user.add.balance.sslcommerz.fail'))
+                && (($request->data()['cancel_url'] ?? null) === route('user.add.balance.sslcommerz.cancel'))
+                && (($request->data()['ipn_url'] ?? null) === route('user.add.balance.sslcommerz.ipn'))
+                && (($request->data()['total_amount'] ?? null) === '250.00');
+        });
+    }
+
+    public function test_sslcommerz_success_callback_credits_balance_once(): void
+    {
+        $this->ensureSslCommerzTransactionsTable();
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+
+        DB::table('brandings')->insert([
+            'sslcommerz_store_id' => 'store-success-1',
+            'sslcommerz_store_password' => 'pass-success-1',
+            'sslcommerz_mode' => 'sandbox',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(607, [
+            'name' => 'SSL Success User',
+            'email' => 'ssl-success-user@example.com',
+            'main_bal' => 100,
+            'permissions' => ['add_balance'],
+        ]);
+
+        DB::table('sslcommerz_transactions')->insert([
+            'user_id' => $user->id,
+            'tran_id' => 'SSL-SUCCESS-001',
+            'amount' => 150,
+            'currency' => 'BDT',
+            'status' => 'pending',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        Http::fake([
+            'https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php*' => Http::response([
+                'status' => 'VALID',
+                'amount' => '150.00',
+                'store_amount' => '150.00',
+                'val_id' => 'VAL-001',
+                'bank_tran_id' => 'BANK-001',
+                'card_type' => 'VISA',
+            ], 200),
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('user.add.balance.sslcommerz.success'), [
+                'tran_id' => 'SSL-SUCCESS-001',
+                'val_id' => 'VAL-001',
+                'status' => 'VALID',
+            ])
+            ->assertRedirect('/add-balance')
+            ->assertSessionHas('success', 'SSLCommerz payment verified and balance added successfully.');
+
+        $this->assertSame(250.0, (float) $user->fresh()->main_bal);
+        $this->assertDatabaseHas('sslcommerz_transactions', [
+            'tran_id' => 'SSL-SUCCESS-001',
+            'status' => 'approved',
+            'bank_tran_id' => 'BANK-001',
+            'card_type' => 'VISA',
+            'validation_id' => 'VAL-001',
+        ]);
+        $this->assertDatabaseHas('balance_add_history', [
+            'user_id' => $user->id,
+            'amount' => 150,
+            'type' => 'sslcommerz',
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('user.add.balance.sslcommerz.success'), [
+                'tran_id' => 'SSL-SUCCESS-001',
+                'val_id' => 'VAL-001',
+                'status' => 'VALID',
+            ])
+            ->assertRedirect('/add-balance')
+            ->assertSessionHas('success', 'SSLCommerz payment already processed.');
+
+        $this->assertSame(250.0, (float) $user->fresh()->main_bal);
+        $this->assertDatabaseCount('balance_add_history', 1);
+
+        Http::assertSentCount(1);
+        Http::assertSent(function (\Illuminate\Http\Client\Request $request) {
+            return str_starts_with($request->url(), 'https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php')
+                && (($request->data()['store_id'] ?? null) === 'store-success-1')
+                && (($request->data()['store_passwd'] ?? null) === 'pass-success-1')
+                && (($request->data()['tran_id'] ?? null) === 'SSL-SUCCESS-001')
+                && (($request->data()['amount'] ?? null) === '150.00' || ($request->data()['amount'] ?? null) === 150);
+        });
+    }
+
+    public function test_sslcommerz_success_callback_without_auth_redirects_to_public_status_page(): void
+    {
+        $this->ensureSslCommerzTransactionsTable();
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+
+        DB::table('brandings')->insert([
+            'sslcommerz_store_id' => 'store-success-guest-1',
+            'sslcommerz_store_password' => 'pass-success-guest-1',
+            'sslcommerz_mode' => 'sandbox',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(1607, [
+            'name' => 'SSL Guest Return User',
+            'email' => 'ssl-guest-return-user@example.com',
+            'main_bal' => 40,
+            'permissions' => ['add_balance'],
+        ]);
+
+        DB::table('sslcommerz_transactions')->insert([
+            'user_id' => $user->id,
+            'tran_id' => 'SSL-SUCCESS-GUEST-001',
+            'amount' => 120,
+            'currency' => 'BDT',
+            'status' => 'pending',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        Http::fake([
+            'https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php*' => Http::response([
+                'status' => 'VALID',
+                'amount' => '120.00',
+                'store_amount' => '120.00',
+                'val_id' => 'VAL-GUEST-001',
+                'bank_tran_id' => 'BANK-GUEST-001',
+                'card_type' => 'VISA',
+            ], 200),
+        ]);
+
+        $this->post(route('user.add.balance.sslcommerz.success'), [
+            'tran_id' => 'SSL-SUCCESS-GUEST-001',
+            'val_id' => 'VAL-GUEST-001',
+            'status' => 'VALID',
+        ])
+            ->assertRedirect(route('user.add.balance.sslcommerz.status', ['tranId' => 'SSL-SUCCESS-GUEST-001']))
+            ->assertSessionHas('success', 'SSLCommerz payment verified and balance added successfully.');
+
+        $this->get(route('user.add.balance.sslcommerz.status', ['tranId' => 'SSL-SUCCESS-GUEST-001']))
             ->assertOk()
-            ->assertSee('Submit Payment Request')
-            ->assertSee('Recent Requests')
-            ->assertSee('MANUAL-TX-001')
-            ->assertSee('Pending');
+            ->assertSee('SSLCommerz Payment Success')
+            ->assertSee('SSL-SUCCESS-GUEST-001')
+            ->assertSee('Login')
+            ->assertSee('Back to Home');
+
+        $this->assertSame(160.0, (float) $user->fresh()->main_bal);
+        $this->assertDatabaseHas('sslcommerz_transactions', [
+            'tran_id' => 'SSL-SUCCESS-GUEST-001',
+            'status' => 'approved',
+            'validation_id' => 'VAL-GUEST-001',
+        ]);
+        $this->assertDatabaseHas('balance_add_history', [
+            'user_id' => $user->id,
+            'amount' => 120,
+            'type' => 'sslcommerz',
+        ]);
+    }
+
+    public function test_sslcommerz_fail_and_cancel_callbacks_update_transaction_without_credit(): void
+    {
+        $this->ensureSslCommerzTransactionsTable();
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+
+        $user = $this->createLoginUser(608, [
+            'name' => 'SSL Fail Cancel User',
+            'email' => 'ssl-fail-cancel-user@example.com',
+            'main_bal' => 90,
+            'permissions' => ['add_balance'],
+        ]);
+
+        DB::table('sslcommerz_transactions')->insert([
+            [
+                'user_id' => $user->id,
+                'tran_id' => 'SSL-FAIL-001',
+                'amount' => 75,
+                'currency' => 'BDT',
+                'status' => 'pending',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'user_id' => $user->id,
+                'tran_id' => 'SSL-CANCEL-001',
+                'amount' => 60,
+                'currency' => 'BDT',
+                'status' => 'pending',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('user.add.balance.sslcommerz.fail'), [
+                'tran_id' => 'SSL-FAIL-001',
+                'status' => 'FAILED',
+                'failedreason' => 'Gateway rejected payment',
+            ])
+            ->assertRedirect('/add-balance')
+            ->assertSessionHas('error', 'SSLCommerz payment failed. Please try again.');
+
+        $this->actingAs($user)
+            ->post(route('user.add.balance.sslcommerz.cancel'), [
+                'tran_id' => 'SSL-CANCEL-001',
+                'status' => 'CANCELLED',
+            ])
+            ->assertRedirect('/add-balance')
+            ->assertSessionHas('error', 'SSLCommerz payment was cancelled.');
+
+        $this->assertDatabaseHas('sslcommerz_transactions', [
+            'tran_id' => 'SSL-FAIL-001',
+            'status' => 'failed',
+            'failure_reason' => 'Gateway rejected payment',
+        ]);
+        $this->assertDatabaseHas('sslcommerz_transactions', [
+            'tran_id' => 'SSL-CANCEL-001',
+            'status' => 'cancelled',
+        ]);
+        $this->assertSame(90.0, (float) $user->fresh()->main_bal);
+        $this->assertDatabaseCount('balance_add_history', 0);
     }
 
     public function test_manual_payment_request_shows_in_user_and_admin_pending_lists(): void
@@ -3475,7 +4395,7 @@ class ExampleTest extends TestCase
             'sender_number' => '01712345678',
             'transaction_id' => 'BKASH-PEND-001',
             'amount' => 500,
-            'note' => 'Pending payment',
+            'note' => 'Cash IN',
             'status' => 'pending',
             'created_at' => now(),
             'updated_at' => now(),
@@ -3485,17 +4405,18 @@ class ExampleTest extends TestCase
             ->get('/my-pending-requests')
             ->assertOk()
             ->assertSee('My Pending Requests')
-            ->assertSee('Balance Add')
+            ->assertSee('mobile banking')
             ->assertSee('Bkash')
-            ->assertSee('BKASH-PEND-001')
+            ->assertSee('Cash IN')
             ->assertSee('01712345678');
 
         $this->actingAs($admin)
-            ->get('/admin/pending-drive-requests?service=bkash')
+            ->get('/admin/pending-drive-requests?service=mobile%20banking')
             ->assertOk()
             ->assertSee('Manual Pending User')
+            ->assertSee('mobile banking')
             ->assertSee('Bkash')
-            ->assertSee('BKASH-PEND-001')
+            ->assertSee('Cash IN')
             ->assertSee('01712345678')
             ->assertSee('/admin/manual-payment-requests/1/approve', false)
             ->assertSee('/admin/manual-payment-requests/1/failed', false)
@@ -3509,6 +4430,7 @@ class ExampleTest extends TestCase
     {
         $this->ensureAdminBalanceColumnsAndHistoryTable();
         $this->ensureManualPaymentRequestsTable();
+        $this->seedDepositSettings();
 
         $admin = $this->createLoginUser(604, [
             'name' => 'Manual Approve Admin',
@@ -3520,6 +4442,7 @@ class ExampleTest extends TestCase
             'name' => 'Manual Approve User',
             'email' => 'manual-approve-user@example.com',
             'main_bal' => 50,
+            'bank_bal' => 20,
         ]);
 
         DB::table('manual_payment_requests')->insert([
@@ -3549,6 +4472,7 @@ class ExampleTest extends TestCase
             'status' => 'pending',
         ]);
         $this->assertSame(50.0, (float) $user->fresh()->main_bal);
+        $this->assertSame(20.0, (float) $user->fresh()->bank_bal);
 
         $this->actingAs($admin)
             ->post('/admin/manual-payment-requests/1/confirm', [
@@ -3563,12 +4487,63 @@ class ExampleTest extends TestCase
             'status' => 'approved',
             'admin_note' => 'Approved by admin',
         ]);
-        $this->assertSame(200.0, (float) $user->fresh()->main_bal);
+        $this->assertSame(50.0, (float) $user->fresh()->main_bal);
+        $this->assertSame(173.0, (float) $user->fresh()->bank_bal);
         $this->assertDatabaseHas('balance_add_history', [
             'user_id' => $user->id,
-            'amount' => 150,
+            'amount' => 153,
             'type' => 'nagad',
             'description' => 'Approved by admin',
+        ]);
+    }
+
+    public function test_admin_manual_payment_approval_uses_main_balance_when_security_bank_balance_is_off(): void
+    {
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+        $this->ensureManualPaymentRequestsTable();
+        $this->seedDepositSettings();
+        $this->setSecuritySettings(['security_bank_balance' => 'off']);
+
+        $admin = $this->createLoginUser(6041, [
+            'name' => 'Manual Approve Main Balance Admin',
+            'email' => 'manual-approve-main-balance-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $user = $this->createLoginUser(6051, [
+            'name' => 'Manual Approve Main Balance User',
+            'email' => 'manual-approve-main-balance-user@example.com',
+            'main_bal' => 50,
+            'bank_bal' => 20,
+        ]);
+
+        DB::table('manual_payment_requests')->insert([
+            'id' => 11,
+            'user_id' => $user->id,
+            'method' => 'Bkash',
+            'sender_number' => '01712345678',
+            'transaction_id' => 'BKASH-APP-011',
+            'amount' => 100,
+            'note' => 'Main balance approval test',
+            'status' => 'pending',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->post('/admin/manual-payment-requests/11/confirm', [
+                'admin_note' => 'Approved to main balance',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/admin/pending-drive-requests')
+            ->assertSessionHas('success', 'Manual payment request approved successfully!');
+
+        $this->assertSame(152.0, (float) $user->fresh()->main_bal);
+        $this->assertSame(20.0, (float) $user->fresh()->bank_bal);
+        $this->assertDatabaseHas('manual_payment_requests', [
+            'id' => 11,
+            'status' => 'approved',
+            'admin_note' => 'Approved to main balance',
         ]);
     }
 
@@ -4357,6 +5332,10 @@ class ExampleTest extends TestCase
 
     public function test_admin_can_create_and_update_reseller_permissions(): void
     {
+        $this->seedDepositSettings([
+            'dealer' => ['account_price' => 25],
+        ]);
+
         $admin = $this->createLoginUser(338, [
             'name' => 'Permission Admin',
             'email' => 'permission-admin@example.com',
@@ -4377,6 +5356,7 @@ class ExampleTest extends TestCase
         $createdUser = User::query()->where('email', 'created-reseller@example.com')->firstOrFail();
 
         $this->assertSame(['add_balance', 'bkash', 'complaints'], $createdUser->permissionKeys());
+        $this->assertSame(-25.0, (float) $createdUser->main_bal);
 
         $this->actingAs($admin)
             ->put(route('admin.resellers.update', $createdUser), [
@@ -5338,6 +6318,45 @@ class ExampleTest extends TestCase
         $this->assertSame('off', DB::table('brandings')->where('id', 1)->value('drive_balance'));
     }
 
+    public function test_admin_branding_update_can_store_uploaded_slideshow_images(): void
+    {
+        Storage::fake('public');
+        $tinyPng = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=');
+
+        $admin = $this->createLoginUser(232, [
+            'name' => 'Brand Slide Admin',
+            'email' => 'brand-slide-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        DB::table('brandings')->insert([
+            'id' => 1,
+            'brand_name' => 'Codecartel',
+            'drive_balance' => 'on',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->post('/admin/branding/update', [
+                'brand_name' => 'Codecartel Telecom',
+                'drive_balance' => 'off',
+                'slides' => [
+                    1 => UploadedFile::fake()->createWithContent('slide-1.png', $tinyPng),
+                    14 => UploadedFile::fake()->createWithContent('slide-14.png', $tinyPng),
+                ],
+            ])
+            ->assertRedirect();
+
+        $storedSlides = DB::table('branding_slides')->orderBy('slot_number')->get();
+
+        $this->assertCount(2, $storedSlides);
+        $this->assertSame(1, (int) $storedSlides[0]->slot_number);
+        $this->assertSame(14, (int) $storedSlides[1]->slot_number);
+        Storage::disk('public')->assertExists($storedSlides[0]->image_path);
+        Storage::disk('public')->assertExists($storedSlides[1]->image_path);
+    }
+
     public function test_admin_branding_page_marks_saved_drive_balance_option_as_checked(): void
     {
         $admin = $this->createLoginUser(231, [
@@ -5360,6 +6379,49 @@ class ExampleTest extends TestCase
             ->assertSee('id="drive_balance_off"', false)
             ->assertSee('name="drive_balance" value="off" checked', false)
             ->assertSee('id="drive_balance_on"', false);
+    }
+
+    public function test_admin_branding_page_shows_slideshow_upload_slots_and_existing_preview(): void
+    {
+        $admin = $this->createLoginUser(233, [
+            'name' => 'Branding Slide Viewer',
+            'email' => 'branding-slide-viewer@example.com',
+            'is_admin' => true,
+        ]);
+
+        DB::table('branding_slides')->insert([
+            'slot_number' => 1,
+            'image_path' => 'branding-slides/existing-slide.jpg',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/branding')
+            ->assertOk()
+            ->assertSee('Slide Show Images')
+            ->assertSee('name="slides[1]"', false)
+            ->assertSee('name="slides[14]"', false)
+            ->assertSee('storage/branding-slides/existing-slide.jpg', false);
+    }
+
+    public function test_homepage_displays_uploaded_branding_slides_when_available(): void
+    {
+        DB::table('branding_slides')->insert([
+            'slot_number' => 1,
+            'image_path' => 'branding-slides/home-slide.jpg',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->get('/')
+            ->assertOk()
+            ->assertSee('id="home"', false)
+            ->assertSee('branding-slider-box', false)
+            ->assertSee('storage/branding-slides/home-slide.jpg', false)
+            ->assertSee('Fast recharge, drive, and internet service for all operators.');
     }
 
     public function test_admin_pending_requests_page_shows_type_column_after_operator(): void
@@ -7083,6 +8145,233 @@ class ExampleTest extends TestCase
         $filteredResponse->assertDontSee('Pending admin all history row');
     }
 
+    public function test_admin_all_history_includes_mobile_banking_records_and_supports_method_filters(): void
+    {
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+        $this->ensureManualPaymentRequestsTable();
+
+        Schema::create('drive_requests', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->unsignedBigInteger('package_id')->nullable();
+            $table->string('operator')->nullable();
+            $table->string('mobile')->nullable();
+            $table->decimal('amount', 10, 2)->default(0);
+            $table->string('status')->default('pending');
+            $table->timestamps();
+        });
+
+        Schema::create('drive_packages', function (Blueprint $table) {
+            $table->id();
+            $table->string('operator')->nullable();
+            $table->string('name')->nullable();
+            $table->decimal('price', 10, 2)->default(0);
+            $table->timestamps();
+        });
+
+        Schema::create('drive_history', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->unsignedBigInteger('package_id')->nullable();
+            $table->string('operator')->nullable();
+            $table->string('mobile')->nullable();
+            $table->decimal('amount', 10, 2)->default(0);
+            $table->string('status')->default('success');
+            $table->string('description')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('regular_packages', function (Blueprint $table) {
+            $table->id();
+            $table->string('operator')->nullable();
+            $table->string('name')->nullable();
+            $table->decimal('price', 10, 2)->default(0);
+            $table->timestamps();
+        });
+
+        Schema::create('regular_requests', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->unsignedBigInteger('package_id')->nullable();
+            $table->string('operator')->nullable();
+            $table->string('mobile')->nullable();
+            $table->decimal('amount', 10, 2)->default(0);
+            $table->string('status')->default('pending');
+            $table->string('description')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('recharge_history', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->decimal('amount', 15, 2);
+            $table->string('type')->nullable();
+            $table->text('description')->nullable();
+            $table->timestamps();
+        });
+
+        $admin = $this->createLoginUser(228, [
+            'name' => 'Mobile Banking History Admin',
+            'email' => 'mobile-banking-history-admin@example.com',
+            'is_admin' => true,
+            'main_bal' => 1000,
+        ]);
+
+        $historyUser = $this->createLoginUser(229, [
+            'name' => 'Mobile Banking History User',
+            'email' => 'mobile-banking-history-user@example.com',
+            'main_bal' => 350,
+            'bank_bal' => 980,
+        ]);
+
+        DB::table('manual_payment_requests')->insert([
+            [
+                'user_id' => $historyUser->id,
+                'method' => 'Bkash',
+                'sender_number' => '01711111111',
+                'transaction_id' => 'BKASH-HISTORY-001',
+                'amount' => 120,
+                'note' => 'Cash IN',
+                'status' => 'approved',
+                'admin_note' => 'Bkash balance add approved',
+                'created_at' => now()->subHour(),
+                'updated_at' => now()->subMinutes(4),
+            ],
+            [
+                'user_id' => $historyUser->id,
+                'method' => 'Nagad',
+                'sender_number' => '01822222222',
+                'transaction_id' => 'NAGAD-HISTORY-001',
+                'amount' => 130,
+                'note' => 'Cash IN',
+                'status' => 'approved',
+                'admin_note' => 'Nagad balance add approved',
+                'created_at' => now()->subHour(),
+                'updated_at' => now()->subMinutes(3),
+            ],
+            [
+                'user_id' => $historyUser->id,
+                'method' => 'Rocket',
+                'sender_number' => '01933333333',
+                'transaction_id' => 'ROCKET-HISTORY-001',
+                'amount' => 140,
+                'note' => 'Cash IN',
+                'status' => 'approved',
+                'admin_note' => 'Rocket balance add approved',
+                'created_at' => now()->subHour(),
+                'updated_at' => now()->subMinutes(2),
+            ],
+            [
+                'user_id' => $historyUser->id,
+                'method' => 'Upay',
+                'sender_number' => '01644444444',
+                'transaction_id' => 'UPAY-HISTORY-001',
+                'amount' => 150,
+                'note' => 'Cash IN',
+                'status' => 'approved',
+                'admin_note' => 'Upay balance add approved',
+                'created_at' => now()->subHour(),
+                'updated_at' => now()->subMinute(),
+            ],
+        ]);
+
+        DB::table('balance_add_history')->insert([
+            [
+                'user_id' => $historyUser->id,
+                'amount' => 120,
+                'type' => 'bkash',
+                'description' => 'Bkash balance add approved',
+                'created_at' => now()->subMinutes(4),
+                'updated_at' => now()->subMinutes(4),
+            ],
+            [
+                'user_id' => $historyUser->id,
+                'amount' => 130,
+                'type' => 'nagad',
+                'description' => 'Nagad balance add approved',
+                'created_at' => now()->subMinutes(3),
+                'updated_at' => now()->subMinutes(3),
+            ],
+            [
+                'user_id' => $historyUser->id,
+                'amount' => 140,
+                'type' => 'rocket',
+                'description' => 'Rocket balance add approved',
+                'created_at' => now()->subMinutes(2),
+                'updated_at' => now()->subMinutes(2),
+            ],
+            [
+                'user_id' => $historyUser->id,
+                'amount' => 150,
+                'type' => 'upay',
+                'description' => 'Upay balance add approved',
+                'created_at' => now()->subMinute(),
+                'updated_at' => now()->subMinute(),
+            ],
+        ]);
+
+        DB::table('recharge_history')->insert([
+            'user_id' => $historyUser->id,
+            'amount' => 90,
+            'type' => 'Bkash',
+            'description' => 'Legacy bkash recharge',
+            'created_at' => now()->subMinutes(5),
+            'updated_at' => now()->subMinutes(5),
+        ]);
+
+        $response = $this->actingAs($admin)->get('/admin/all-history');
+
+        $response->assertOk();
+        $response->assertSee('Mobile Banking');
+        $response->assertDontSee('value="mobile_banking"', false);
+        $response->assertDontSee(route('admin.all.history', ['service' => 'mobile_banking']), false);
+        $response->assertSee(route('admin.all.history', ['service' => 'bkash']), false);
+        $response->assertSee(route('admin.all.history', ['service' => 'nagad']), false);
+        $response->assertSee(route('admin.all.history', ['service' => 'rocket']), false);
+        $response->assertSee(route('admin.all.history', ['service' => 'upay']), false);
+        $response->assertSee('Bkash balance add approved');
+        $response->assertSee('Nagad balance add approved');
+        $response->assertSee('Rocket balance add approved');
+        $response->assertSee('Upay balance add approved');
+        $response->assertSee('01711111111');
+        $response->assertSee('01822222222');
+        $response->assertSee('01933333333');
+        $response->assertSee('01644444444');
+        $response->assertSee('Legacy bkash recharge');
+
+        $mobileBankingResponse = $this->actingAs($admin)->get('/admin/all-history?service=mobile_banking');
+
+        $mobileBankingResponse->assertOk();
+        $mobileBankingResponse->assertSee('Bkash balance add approved');
+        $mobileBankingResponse->assertSee('Nagad balance add approved');
+        $mobileBankingResponse->assertSee('Rocket balance add approved');
+        $mobileBankingResponse->assertSee('Upay balance add approved');
+        $mobileBankingResponse->assertSee('Legacy bkash recharge');
+        $mobileBankingResponse->assertSee('01711111111');
+        $mobileBankingResponse->assertSee('01822222222');
+        $mobileBankingResponse->assertSee('01933333333');
+        $mobileBankingResponse->assertSee('01644444444');
+
+        $bkashResponse = $this->actingAs($admin)->get('/admin/all-history?service=bkash');
+
+        $bkashResponse->assertOk();
+        $bkashResponse->assertSee('Bkash balance add approved');
+        $bkashResponse->assertSee('Legacy bkash recharge');
+        $bkashResponse->assertSee('01711111111');
+        $bkashResponse->assertDontSee('Nagad balance add approved');
+        $bkashResponse->assertDontSee('Rocket balance add approved');
+        $bkashResponse->assertDontSee('Upay balance add approved');
+
+        $upayResponse = $this->actingAs($admin)->get('/admin/all-history?service=upay');
+
+        $upayResponse->assertOk();
+        $upayResponse->assertSee('Upay balance add approved');
+        $upayResponse->assertDontSee('Bkash balance add approved');
+        $upayResponse->assertDontSee('Nagad balance add approved');
+        $upayResponse->assertDontSee('Rocket balance add approved');
+        $upayResponse->assertDontSee('Legacy bkash recharge');
+    }
+
     public function test_admin_service_modules_page_renders_database_backed_module_table(): void
     {
         $this->seedServiceModulesTable();
@@ -7286,11 +8575,14 @@ class ExampleTest extends TestCase
 
         $response->assertOk();
         $response->assertSee('Security Modual');
+        $response->assertSee('Google reCAPTCHA');
         $response->assertSee('SSL/HTTPS Redirect');
         $response->assertSee('Admin login capcha');
         $response->assertSee('Reseller login capcha');
         $response->assertSee('Send offline sms Via');
         $response->assertSee('Comission system');
+        $response->assertSee('max-w-6xl', false);
+        $response->assertDontSee('xl:grid-cols-3', false);
         $response->assertSee('Save Changes');
         $response->assertSee(route('admin.security.modual.update'), false);
     }
@@ -7497,6 +8789,9 @@ class ExampleTest extends TestCase
         $response->assertSee('300.00');
         $response->assertSee('( NUM QTY : 1 )');
         $response->assertSee('500.0');
+        $response->assertSee('Matched Route / Provider');
+        $response->assertSee('Forward Gateway / RouteSim / alpha-route.test');
+        $response->assertSee('Direct');
         $response->assertSee(route('admin.sales.report'), false);
 
         $filteredBySimTo = $this->actingAs($admin)->get(route('admin.sales.report', [
@@ -7512,6 +8807,9 @@ class ExampleTest extends TestCase
         $filteredBySimTo->assertSee('InternetPack');
         $filteredBySimTo->assertSee('300.00');
         $filteredBySimTo->assertSee('420.0');
+        $filteredBySimTo->assertSee('Matched Route / Provider');
+        $filteredBySimTo->assertSee('Forward Gateway / RouteSim / alpha-route.test');
+        $filteredBySimTo->assertDontSee('Direct');
 
         $filteredByModule = $this->actingAs($admin)->get(route('admin.sales.report', [
             'module' => 'internet_pack',
@@ -7521,13 +8819,139 @@ class ExampleTest extends TestCase
         ]));
 
         $filteredByModule->assertOk();
-        $filteredByModule->assertDontSee('Flexiload');
         $filteredByModule->assertSee('InternetPack');
         $filteredByModule->assertSee('300.00');
         $filteredByModule->assertSee('( NUM QTY : 1 )');
         $filteredByModule->assertSee('300.0');
+        $filteredByModule->assertDontSee('120.00');
+        $filteredByModule->assertDontSee('420.0');
         $filteredByModule->assertSee('value="internet_pack" selected', false);
         $filteredByModule->assertSee('value="RouteSim"', false);
+    }
+
+    public function test_admin_balance_report_page_renders_requested_balance_summary(): void
+    {
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+        $this->ensureProviderApiInternetTables();
+
+        $admin = $this->createLoginUser(3229, [
+            'name' => 'Balance Reports Admin',
+            'email' => 'balance-reports-admin@example.com',
+            'is_admin' => true,
+            'main_bal' => 9999,
+        ]);
+
+        $this->createLoginUser(3230, [
+            'name' => 'Balance Reseller One',
+            'email' => 'balance-reseller-one@example.com',
+            'main_bal' => 150.50,
+        ]);
+
+        $this->createLoginUser(3231, [
+            'name' => 'Balance Reseller Two',
+            'email' => 'balance-reseller-two@example.com',
+            'main_bal' => 200.00,
+        ]);
+
+        $this->createLoginUser(3232, [
+            'name' => 'Zero Balance Reseller',
+            'email' => 'zero-balance-reseller@example.com',
+            'main_bal' => 0,
+        ]);
+
+        DB::table('apis')->insert([
+            [
+                'id' => 551,
+                'title' => 'Balance API 1',
+                'user_id' => '3230',
+                'provider' => 'GP',
+                'api_key' => 'balance-report-key-1',
+                'api_url' => 'https://balance-report-1.test/api',
+                'status' => 'active',
+                'balance' => 100.00,
+                'main_balance' => 100.00,
+                'drive_balance' => 0,
+                'bank_balance' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'id' => 552,
+                'title' => 'Backup Sim',
+                'user_id' => '3231',
+                'provider' => 'Robi',
+                'api_key' => 'balance-report-key-2',
+                'api_url' => 'https://balance-report-2.test/api',
+                'status' => 'active',
+                'balance' => 150.25,
+                'main_balance' => 150.25,
+                'drive_balance' => 0,
+                'bank_balance' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.balance.report'));
+
+        $response->assertOk();
+        $response->assertSee('Balance Report');
+        $response->assertSee('My Resellers balance');
+        $response->assertSee('All Reseller ( Balance &gt; 0 )', false);
+        $response->assertSee('SIM Balance');
+        $response->assertSee('Operator');
+        $response->assertSee('Total');
+        $response->assertSee('My Reseller Balance');
+        $response->assertSee('350.50');
+        $response->assertSee('250.25');
+        $response->assertSee('-100.25');
+        $response->assertSee('Balance API 1 / GP');
+        $response->assertSee('Backup Sim / Robi');
+        $response->assertSee(route('admin.balance.report'), false);
+    }
+
+    public function test_admin_and_user_dashboards_render_dark_mode_toggle(): void
+    {
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+        $this->ensureProviderApiDriveTables();
+        $this->ensureProviderApiInternetTables();
+
+        if (! Schema::hasTable('recharge_history')) {
+            Schema::create('recharge_history', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('user_id');
+                $table->decimal('amount', 15, 2)->default(0);
+                $table->string('type')->nullable();
+                $table->timestamps();
+            });
+        }
+
+        $admin = $this->createLoginUser(3227, [
+            'name' => 'Theme Admin',
+            'email' => 'theme-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $user = $this->createLoginUser(3228, [
+            'name' => 'Theme User',
+            'email' => 'theme-user@example.com',
+        ]);
+
+        $adminResponse = $this->actingAs($admin)->get(route('admin.dashboard'));
+
+        $adminResponse->assertOk();
+        $adminResponse->assertDontSee('Dark mode');
+        $adminResponse->assertSee('data-theme-toggle', false);
+        $adminResponse->assertSee('cc-theme-switch', false);
+        $adminResponse->assertSee('bg-base-200 text-base-content', false);
+
+        $userResponse = $this->actingAs($user)->get(route('dashboard'));
+
+        $userResponse->assertOk();
+        $userResponse->assertDontSee('Dark mode');
+        $userResponse->assertSee('data-theme-toggle', false);
+        $userResponse->assertSee('cc-theme-switch', false);
+        $userResponse->assertSee('bg-base-200 text-base-content', false);
     }
 
     public function test_admin_operator_reports_page_renders_requested_table_and_applies_filters(): void
@@ -7693,6 +9117,7 @@ class ExampleTest extends TestCase
         $response = $this->actingAs($admin)
             ->from(route('admin.security.modual'))
             ->post(route('admin.security.modual.update'), [
+                'security_recaptcha' => 'enable',
                 'security_ssl_https_redirect' => 'enable',
                 'security_admin_login_captcha' => 'enable',
                 'security_reseller_login_captcha' => 'disable',
@@ -7729,6 +9154,7 @@ class ExampleTest extends TestCase
         $response->assertSessionHas('success', 'Security Modual settings updated successfully.');
 
         $this->assertDatabaseHas('homepage_settings', [
+            'security_recaptcha' => 'enable',
             'security_ssl_https_redirect' => 'enable',
             'security_admin_login_captcha' => 'enable',
             'security_reseller_login_captcha' => 'disable',
@@ -7865,6 +9291,9 @@ class ExampleTest extends TestCase
     public function test_registration_sets_password_and_pin_change_timestamps(): void
     {
         $this->ensureOtpsTable();
+        $this->seedDepositSettings([
+            'retailer' => ['self_account_price' => 40],
+        ]);
 
         DB::table('otps')->insert([
             'email' => 'timestamp-register@example.com',
@@ -7897,6 +9326,7 @@ class ExampleTest extends TestCase
 
         $this->assertNotNull($user->password_changed_at);
         $this->assertNotNull($user->pin_changed_at);
+        $this->assertSame(-40.0, (float) $user->main_bal);
     }
 
     public function test_password_strong_setting_rejects_weak_forgot_password_reset(): void
@@ -8144,22 +9574,24 @@ class ExampleTest extends TestCase
             'method' => 'Bkash',
             'sender_number' => '01712345678',
             'transaction_id' => 'txn-existing',
-            'amount' => 100,
+            'amount' => 500,
+            'note' => 'Cash IN',
             'status' => 'pending',
             'created_at' => now()->subMinute(),
             'updated_at' => now()->subMinute(),
         ]);
 
         $this->actingAs($user)
-            ->from(route('user.add.balance'))
+            ->from(route('user.bkash'))
             ->post(route('user.add.balance.submit'), [
                 'method' => 'Bkash',
+                'redirect_route' => 'user.bkash',
                 'sender_number' => '01712345678',
-                'transaction_id' => 'txn-new',
-                'amount' => 150,
-                'note' => 'Retry',
+                'amount' => 500,
+                'type' => 'Cash IN',
+                'pin' => '1234',
             ])
-            ->assertRedirect(route('user.add.balance'))
+            ->assertRedirect(route('user.bkash'))
             ->assertSessionHasErrors(['request']);
 
         $this->assertDatabaseCount('manual_payment_requests', 1);
@@ -8205,7 +9637,14 @@ class ExampleTest extends TestCase
     public function test_operator_setting_blocks_selected_operator_for_flexi(): void
     {
         $this->ensureFlexiRequestsTable();
-        $this->setSecuritySettings(['security_gp' => 'on']);
+        $this->setSecuritySettings([
+            'security_gp' => 'on',
+            'security_robi' => 'on',
+            'security_banglalink' => 'on',
+            'security_airtel' => 'off',
+            'security_teletalk' => 'on',
+            'security_skitto' => 'on',
+        ]);
 
         DB::table('operators')->insert([
             'name' => 'Airtel',
@@ -8293,7 +9732,14 @@ class ExampleTest extends TestCase
     public function test_operator_setting_blocks_selected_operator_for_internet_purchase(): void
     {
         $this->ensureProviderApiInternetTables();
-        $this->setSecuritySettings(['security_gp' => 'on']);
+        $this->setSecuritySettings([
+            'security_gp' => 'on',
+            'security_robi' => 'off',
+            'security_banglalink' => 'on',
+            'security_airtel' => 'on',
+            'security_teletalk' => 'on',
+            'security_skitto' => 'on',
+        ]);
 
         $user = $this->createLoginUser(333, [
             'name' => 'Blocked Internet Operator User',
@@ -8612,6 +10058,7 @@ class ExampleTest extends TestCase
     public function test_user_all_history_defaults_to_today_only_and_old_data_can_be_filtered(): void
     {
         $this->ensureFlexiRequestsTable();
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
 
         Schema::create('drive_history', function (Blueprint $table) {
             $table->id();
@@ -8721,6 +10168,49 @@ class ExampleTest extends TestCase
             ],
         ]);
 
+        DB::table('balance_add_history')->insert([
+            [
+                'user_id' => $user->id,
+                'amount' => 120,
+                'type' => 'bkash',
+                'description' => 'Bkash cash in approved',
+                'created_at' => now()->startOfDay()->addHours(13),
+                'updated_at' => now()->startOfDay()->addHours(13),
+            ],
+            [
+                'user_id' => $user->id,
+                'amount' => 140,
+                'type' => 'nagad',
+                'description' => 'Nagad cash in approved',
+                'created_at' => now()->startOfDay()->addHours(14),
+                'updated_at' => now()->startOfDay()->addHours(14),
+            ],
+            [
+                'user_id' => $user->id,
+                'amount' => 160,
+                'type' => 'rocket',
+                'description' => 'Today rocket approved',
+                'created_at' => now()->startOfDay()->addHours(15),
+                'updated_at' => now()->startOfDay()->addHours(15),
+            ],
+            [
+                'user_id' => $user->id,
+                'amount' => 180,
+                'type' => 'rocket',
+                'description' => 'Old rocket approved',
+                'created_at' => now()->subDay()->startOfDay()->addHours(15),
+                'updated_at' => now()->subDay()->startOfDay()->addHours(15),
+            ],
+            [
+                'user_id' => $user->id,
+                'amount' => 200,
+                'type' => 'upay',
+                'description' => 'Today upay approved',
+                'created_at' => now()->startOfDay()->addHours(16),
+                'updated_at' => now()->startOfDay()->addHours(16),
+            ],
+        ]);
+
         $todayResponse = $this->actingAs($user)->get('/my-history');
 
         $todayResponse->assertOk();
@@ -8731,8 +10221,33 @@ class ExampleTest extends TestCase
         $todayResponse->assertSee('Flexi');
         $todayResponse->assertSee('Prepaid Flexiload');
         $todayResponse->assertSee('01866666666');
+        $todayResponse->assertSee('Bkash cash in approved');
+        $todayResponse->assertSee('Nagad cash in approved');
+        $todayResponse->assertSee('Today rocket approved');
+        $todayResponse->assertSee('Today upay approved');
         $todayResponse->assertDontSee('Old user history row');
+        $todayResponse->assertDontSee('Old rocket approved');
         $todayResponse->assertDontSee('01677777777');
+        $todayResponse->assertSee('<th>SL</th>', false);
+        $todayResponse->assertSee(route('user.all.history', ['type' => 'internet']), false);
+        $todayResponse->assertSeeInOrder([
+            '<td>8</td>',
+            'Today upay approved',
+            '<td>7</td>',
+            'Today rocket approved',
+            '<td>6</td>',
+            'Nagad cash in approved',
+            '<td>5</td>',
+            'Bkash cash in approved',
+            '<td>4</td>',
+            'Prepaid Flexiload',
+            '<td>3</td>',
+            'Internet Pack Request Cancelled',
+            '<td>2</td>',
+            'Internet Pack Recharge',
+            '<td>1</td>',
+            'Today user history row',
+        ], false);
         $todayResponse->assertSee('History Filter');
         $todayResponse->assertSee('value="' . now()->toDateString() . '"', false);
 
@@ -8741,10 +10256,98 @@ class ExampleTest extends TestCase
         $filteredResponse->assertOk();
         $filteredResponse->assertSee('Old user history row');
         $filteredResponse->assertSee('Postpaid Flexiload');
+        $filteredResponse->assertSee('Old rocket approved');
         $filteredResponse->assertSee('01677777777');
         $filteredResponse->assertDontSee('Today user history row');
+        $filteredResponse->assertDontSee('Bkash cash in approved');
+        $filteredResponse->assertDontSee('Nagad cash in approved');
+        $filteredResponse->assertDontSee('Today rocket approved');
+        $filteredResponse->assertDontSee('Today upay approved');
         $filteredResponse->assertDontSee('01899999999');
         $filteredResponse->assertDontSee('01866666666');
+
+        $flexiOnlyResponse = $this->actingAs($user)->get('/my-history?type=flexi');
+
+        $flexiOnlyResponse->assertOk();
+        $flexiOnlyResponse->assertSee('Flexiload History');
+        $flexiOnlyResponse->assertSee('History');
+        $flexiOnlyResponse->assertSee('Pending Request');
+        $flexiOnlyResponse->assertSee(route('user.all.history', ['type' => 'flexi']), false);
+        $flexiOnlyResponse->assertSee('<th>SL</th>', false);
+        $flexiOnlyResponse->assertSee('Prepaid Flexiload');
+        $flexiOnlyResponse->assertSee('01866666666');
+        $flexiOnlyResponse->assertDontSee('Today user history row');
+        $flexiOnlyResponse->assertDontSee('Internet Pack Recharge');
+        $flexiOnlyResponse->assertDontSee('Bkash cash in approved');
+        $flexiOnlyResponse->assertDontSee('01899999999');
+
+        $internetOnlyResponse = $this->actingAs($user)->get('/my-history?type=internet');
+
+        $internetOnlyResponse->assertOk();
+        $internetOnlyResponse->assertSee('Internet Pack History');
+        $internetOnlyResponse->assertSee('Only Internet Pack Records');
+        $internetOnlyResponse->assertSee('name="type" value="internet"', false);
+        $internetOnlyResponse->assertSee(route('user.all.history', ['type' => 'internet']), false);
+        $internetOnlyResponse->assertSee('<th>SL</th>', false);
+        $internetOnlyResponse->assertSeeInOrder([
+            '<td>2</td>',
+            'Internet Pack Request Cancelled',
+            '<td>1</td>',
+            'Internet Pack Recharge',
+        ], false);
+        $internetOnlyResponse->assertSee('01899999999');
+        $internetOnlyResponse->assertSee('01755555555');
+        $internetOnlyResponse->assertDontSee('Today user history row');
+        $internetOnlyResponse->assertDontSee('Prepaid Flexiload');
+        $internetOnlyResponse->assertDontSee('Bkash cash in approved');
+
+        $bkashOnlyResponse = $this->actingAs($user)->get('/my-history?type=bkash');
+
+        $bkashOnlyResponse->assertOk();
+        $bkashOnlyResponse->assertSee('Bkash History');
+        $bkashOnlyResponse->assertSee('Only Bkash Records');
+        $bkashOnlyResponse->assertSee('name="type" value="bkash"', false);
+        $bkashOnlyResponse->assertSee(route('user.all.history', ['type' => 'bkash']), false);
+        $bkashOnlyResponse->assertSee('<th>SL</th>', false);
+        $bkashOnlyResponse->assertSee('Bkash cash in approved');
+        $bkashOnlyResponse->assertDontSee('Nagad cash in approved');
+        $bkashOnlyResponse->assertDontSee('Today rocket approved');
+
+        $nagadOnlyResponse = $this->actingAs($user)->get('/my-history?type=nagad');
+
+        $nagadOnlyResponse->assertOk();
+        $nagadOnlyResponse->assertSee('Nagad History');
+        $nagadOnlyResponse->assertSee('Only Nagad Records');
+        $nagadOnlyResponse->assertSee('name="type" value="nagad"', false);
+        $nagadOnlyResponse->assertSee(route('user.all.history', ['type' => 'nagad']), false);
+        $nagadOnlyResponse->assertSee('<th>SL</th>', false);
+        $nagadOnlyResponse->assertSee('Nagad cash in approved');
+        $nagadOnlyResponse->assertDontSee('Bkash cash in approved');
+        $nagadOnlyResponse->assertDontSee('Today rocket approved');
+
+        $rocketOnlyResponse = $this->actingAs($user)->get('/my-history?type=rocket');
+
+        $rocketOnlyResponse->assertOk();
+        $rocketOnlyResponse->assertSee('Rocket History');
+        $rocketOnlyResponse->assertSee('Only Rocket Records');
+        $rocketOnlyResponse->assertSee('name="type" value="rocket"', false);
+        $rocketOnlyResponse->assertSee(route('user.all.history', ['type' => 'rocket']), false);
+        $rocketOnlyResponse->assertSee('<th>SL</th>', false);
+        $rocketOnlyResponse->assertSee('Today rocket approved');
+        $rocketOnlyResponse->assertDontSee('Bkash cash in approved');
+        $rocketOnlyResponse->assertDontSee('Nagad cash in approved');
+
+        $upayOnlyResponse = $this->actingAs($user)->get('/my-history?type=upay');
+
+        $upayOnlyResponse->assertOk();
+        $upayOnlyResponse->assertSee('Upay History');
+        $upayOnlyResponse->assertSee('Only Upay Records');
+        $upayOnlyResponse->assertSee('name="type" value="upay"', false);
+        $upayOnlyResponse->assertSee(route('user.all.history', ['type' => 'upay']), false);
+        $upayOnlyResponse->assertSee('Today upay approved');
+        $upayOnlyResponse->assertDontSee('Bkash cash in approved');
+        $upayOnlyResponse->assertDontSee('Nagad cash in approved');
+        $upayOnlyResponse->assertDontSee('Today rocket approved');
     }
 
     public function test_user_drive_history_includes_cancelled_internet_requests_with_cancelled_badge(): void
@@ -8823,6 +10426,22 @@ class ExampleTest extends TestCase
         $response = $this->actingAs($user)->get('/my-drive-history');
 
         $response->assertOk();
+        $response->assertSee('Drive History Viewer');
+        $response->assertSee('History');
+        $response->assertSee('Pending Request');
+        $response->assertSee(route('dashboard'), false);
+        $response->assertSee(route('user.all.history'), false);
+        $response->assertSee(route('user.drive.history'), false);
+        $response->assertSee(route('user.all.history', ['type' => 'internet']), false);
+        $response->assertSee('active bg-primary text-primary-content', false);
+        $response->assertSee('<th>SL</th>', false);
+        $response->assertSeeInOrder([
+            '<td>2</td>',
+            '01977777777',
+            '<td>1</td>',
+            '01911111111',
+        ], false);
+        $response->assertSee('Logout');
         $response->assertSee('01977777777');
         $response->assertSee('Internet Pack Request Cancelled');
         $response->assertSee('Cancelled');
@@ -9435,6 +11054,139 @@ class ExampleTest extends TestCase
             ->assertSee('const selectedBalanceLabel = "main balance"', false)
             ->assertSee('const packagePrice = 300', false)
             ->assertDontSee('const availableBalance = 40', false);
+    }
+
+    public function test_drive_confirm_page_uses_security_drive_balance_setting_over_branding(): void
+    {
+        if (!Schema::hasColumn('users', 'drive_bal')) {
+            Schema::table('users', function (Blueprint $table) {
+                $table->decimal('drive_bal', 15, 2)->default(0);
+            });
+        }
+
+        if (!Schema::hasColumn('users', 'main_bal')) {
+            Schema::table('users', function (Blueprint $table) {
+                $table->decimal('main_bal', 15, 2)->default(0);
+            });
+        }
+
+        if (!Schema::hasTable('drive_packages')) {
+            Schema::create('drive_packages', function (Blueprint $table) {
+                $table->id();
+                $table->string('operator');
+                $table->string('name');
+                $table->decimal('price', 10, 2);
+                $table->decimal('commission', 10, 2);
+                $table->date('expire');
+                $table->string('status')->default('active');
+                $table->integer('sell_today')->default(0);
+                $table->decimal('amount', 10, 2)->default(0);
+                $table->decimal('comm', 10, 2)->default(0);
+                $table->timestamps();
+            });
+        }
+
+        $this->setSecuritySettings(['security_drive_balance' => 'off']);
+
+        DB::table('brandings')->insert([
+            'id' => 1,
+            'drive_balance' => 'on',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('users')->insert([
+            'id' => 309,
+            'name' => 'Drive Confirm Security Setting User',
+            'email' => 'drive-confirm-security-setting@example.com',
+            'password' => 'secret',
+            'permissions' => json_encode(['drive']),
+            'main_bal' => 650,
+            'drive_bal' => 45,
+            'is_admin' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $packageId = DB::table('drive_packages')->insertGetId([
+            'operator' => 'Grameenphone',
+            'name' => 'Drive Confirm Security Setting Package',
+            'price' => 350,
+            'commission' => 25,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = User::query()->findOrFail(309);
+
+        $this->actingAs($user)
+            ->get('/drive-offers/Grameenphone/confirm/' . $packageId . '?mobile=01712345678&pin=1234')
+            ->assertOk()
+            ->assertSee('const availableBalance = 650', false)
+            ->assertSee('const selectedBalanceLabel = "main balance"', false)
+            ->assertDontSee('const availableBalance = 45', false);
+    }
+
+    public function test_provider_api_drive_uses_security_drive_balance_setting_over_branding(): void
+    {
+        $this->ensureProviderApiDriveTables();
+        $this->setSecuritySettings(['security_drive_balance' => 'off']);
+
+        DB::table('brandings')->insert([
+            'id' => 1,
+            'drive_balance' => 'on',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $user = $this->createLoginUser(1312, [
+            'name' => 'API Security Drive User',
+            'email' => 'api-security-drive-user@example.com',
+            'api_key' => 'SECURITYDRIVEKEY1234567890SECURITYDRIVEKEY12',
+            'api_access_enabled' => true,
+            'main_bal' => 400,
+            'drive_bal' => 400,
+        ]);
+
+        $packageId = DB::table('drive_packages')->insertGetId([
+            'operator' => 'Grameenphone',
+            'name' => 'API Security Drive Package',
+            'price' => 220,
+            'commission' => 20,
+            'expire' => '2026-12-31',
+            'status' => 'active',
+            'sell_today' => 0,
+            'amount' => 0,
+            'comm' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->postJson('/api/v1/drive', [
+            'api_key' => $user->api_key,
+            'package_id' => $packageId,
+            'mobile' => '01712345678',
+        ]);
+
+        $response->assertCreated()->assertJson([
+            'status' => 'success',
+            'remaining_balance' => 200.0,
+            'balance_type' => 'main_bal',
+        ]);
+
+        $this->assertDatabaseHas('drive_requests', [
+            'user_id' => $user->id,
+            'package_id' => $packageId,
+            'balance_type' => 'main_bal',
+        ]);
+        $this->assertSame(200.0, (float) $user->fresh()->main_bal);
+        $this->assertSame(400.0, (float) $user->fresh()->drive_bal);
     }
 
     public function test_internet_confirm_page_renders_balance_values_for_purchase_script(): void
@@ -10094,6 +11846,76 @@ class ExampleTest extends TestCase
             $table->text('admin_note')->nullable();
             $table->timestamps();
         });
+    }
+
+    private function ensureSslCommerzTransactionsTable(): void
+    {
+        if (Schema::hasTable('sslcommerz_transactions')) {
+            return;
+        }
+
+        Schema::create('sslcommerz_transactions', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->string('tran_id')->unique();
+            $table->string('session_key')->nullable();
+            $table->decimal('amount', 10, 2)->default(0);
+            $table->string('currency', 10)->default('BDT');
+            $table->string('status')->default('initiated');
+            $table->string('gateway_status')->nullable();
+            $table->text('gateway_url')->nullable();
+            $table->decimal('validated_amount', 10, 2)->nullable();
+            $table->string('bank_tran_id')->nullable();
+            $table->string('card_type')->nullable();
+            $table->decimal('store_amount', 10, 2)->nullable();
+            $table->string('validation_id')->nullable();
+            $table->text('request_payload')->nullable();
+            $table->text('init_response_payload')->nullable();
+            $table->text('validation_payload')->nullable();
+            $table->text('callback_payload')->nullable();
+            $table->text('failure_reason')->nullable();
+            $table->timestamp('validated_at')->nullable();
+            $table->timestamp('credited_at')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    private function ensureDepositSettingsTable(): void
+    {
+        if (Schema::hasTable('deposit_settings')) {
+            return;
+        }
+
+        Schema::create('deposit_settings', function (Blueprint $table) {
+            $table->id();
+            $table->string('level')->unique();
+            $table->string('runtime_level')->unique();
+            $table->string('level_name');
+            $table->unsignedInteger('sort_order')->default(0);
+            foreach (DepositSetting::editableColumns() as $column) {
+                $table->decimal($column, 10, 2)->default(0);
+            }
+            $table->timestamps();
+        });
+    }
+
+    private function seedDepositSettings(array $overridesByLevel = []): void
+    {
+        $this->ensureDepositSettingsTable();
+
+        DB::table('deposit_settings')->delete();
+
+        $timestamp = now();
+        $records = array_map(function (array $row) use ($overridesByLevel, $timestamp) {
+            $overrides = $overridesByLevel[$row['runtime_level']] ?? $overridesByLevel[$row['level']] ?? [];
+
+            return array_merge($row, $overrides, [
+                'created_at' => $timestamp,
+                'updated_at' => $timestamp,
+            ]);
+        }, DepositSetting::defaultRows());
+
+        DB::table('deposit_settings')->insert($records);
     }
 
     private function ensureOtpsTable(): void

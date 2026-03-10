@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Branding;
 use App\Models\HomepageSetting;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -196,11 +197,17 @@ class SecurityRuntimeService
     {
         $normalized = $this->normalizeOperator($operator);
 
-        if ($normalized === null || ! $this->hasExplicitOperatorRestrictions()) {
+        if ($normalized === null) {
             return true;
         }
 
-        return $this->setting(self::OPERATOR_FIELDS[$normalized]) === 'on';
+        $configuredValue = $this->configuredSetting(self::OPERATOR_FIELDS[$normalized]);
+
+        if (! in_array($configuredValue, ['on', 'off'], true)) {
+            return true;
+        }
+
+        return $configuredValue === 'on';
     }
 
     public function operatorBlockedMessage(): string
@@ -208,15 +215,40 @@ class SecurityRuntimeService
         return 'This operator is currently unavailable.';
     }
 
-    private function hasExplicitOperatorRestrictions(): bool
+    public function driveBalanceType(): string
     {
-        foreach (self::OPERATOR_FIELDS as $field) {
-            if ($this->setting($field) === 'on') {
-                return true;
-            }
+        return $this->usesDriveBalance() ? 'drive_bal' : 'main_bal';
+    }
+
+    public function manualPaymentBalanceType(): string
+    {
+        return $this->usesBankBalance() ? 'bank_bal' : 'main_bal';
+    }
+
+    public function usesDriveBalance(): bool
+    {
+        $configuredValue = $this->configuredSetting('security_drive_balance');
+
+        if (in_array($configuredValue, ['on', 'off'], true)) {
+            return $configuredValue === 'on';
         }
 
-        return false;
+        if (! Schema::hasTable('brandings') || ! Schema::hasColumn('brandings', 'drive_balance')) {
+            return true;
+        }
+
+        return (Branding::query()->first()?->drive_balance ?? 'on') !== 'off';
+    }
+
+    public function usesBankBalance(): bool
+    {
+        $configuredValue = $this->configuredSetting('security_bank_balance');
+
+        if (in_array($configuredValue, ['on', 'off'], true)) {
+            return $configuredValue === 'on';
+        }
+
+        return true;
     }
 
     private function isLoginCaptchaEnabledFor(string $context): bool
@@ -269,6 +301,15 @@ class SecurityRuntimeService
             'skitto' => 'skitto',
             default => null,
         };
+    }
+
+    private function configuredSetting(string $key)
+    {
+        if (! Schema::hasTable('homepage_settings') || ! Schema::hasColumn('homepage_settings', $key)) {
+            return null;
+        }
+
+        return HomepageSetting::query()->first()?->{$key};
     }
 
     private function setting(string $key)

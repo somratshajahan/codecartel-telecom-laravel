@@ -11,6 +11,7 @@ use App\Models\RegularPackage;
 use App\Models\RegularRequest;
 use App\Models\User;
 use App\Services\FirebasePushNotificationService;
+use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -76,9 +77,11 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () use ($interne
     ];
 
     $defaultBalanceTypeForService = static function (string $service): string {
+        $securityRuntime = app(SecurityRuntimeService::class);
+
         return match ($service) {
-            'drive' => 'drive_bal',
-            'bkash', 'nagad', 'rocket', 'upay' => 'bank_bal',
+            'drive' => $securityRuntime->driveBalanceType(),
+            'bkash', 'nagad', 'rocket', 'upay' => $securityRuntime->manualPaymentBalanceType(),
             default => 'main_bal',
         };
     };
@@ -613,6 +616,15 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () use ($interne
 
         $amount = (int) $validated['amount'];
         $finalOperatorName = $flexiOperatorNames[$finalKey] ?? ucfirst($finalKey);
+        $securityRuntime = app(SecurityRuntimeService::class);
+
+        if (! $securityRuntime->isOperatorAllowed($finalOperatorName)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $securityRuntime->operatorBlockedMessage(),
+            ], 422);
+        }
+
         $routeCode = $resolveRouteProductCode($finalOperatorName);
         $balanceType = $resolveSameBillingBalanceType('recharge', $routeCode, $validated['number']) ?? 'main_bal';
         $forwardRoute = $resolveForwardableApiRoute('recharge', $routeCode, $validated['number']);
@@ -717,7 +729,7 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () use ($interne
         ], 201);
     });
 
-    Route::post('/drive', function (Request $request) use ($ensureApiServiceEnabled, $resolveRouteProductCode, $resolveSameBillingBalanceType, $resolveForwardableApiRoute, $withAvailableColumns, $incomingRoutedAttributes, $forwardRoutedRequest) {
+    Route::post('/drive', function (Request $request) use ($defaultBalanceTypeForService, $ensureApiServiceEnabled, $resolveRouteProductCode, $resolveSameBillingBalanceType, $resolveForwardableApiRoute, $withAvailableColumns, $incomingRoutedAttributes, $forwardRoutedRequest) {
         if ($blockedResponse = $ensureApiServiceEnabled($request, 'drive')) {
             return $blockedResponse;
         }
@@ -743,12 +755,9 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () use ($interne
         }
 
         $amount = (float) $package->price - (float) $package->commission;
-        $branding = Branding::query()->first();
-        $driveBalanceDisabled = (($branding->drive_balance ?? 'on') === 'off');
         $routeCode = $resolveRouteProductCode($package->operator);
-        $balanceType = $driveBalanceDisabled
-            ? 'main_bal'
-            : ($resolveSameBillingBalanceType('drive', $routeCode, $validated['mobile']) ?? 'drive_bal');
+        $balanceType = $resolveSameBillingBalanceType('drive', $routeCode, $validated['mobile'])
+            ?? $defaultBalanceTypeForService('drive');
         $forwardRoute = $resolveForwardableApiRoute('drive', $routeCode, $validated['mobile']);
         $balanceLabel = $balanceType === 'main_bal' ? 'main balance' : 'drive balance';
 
@@ -874,6 +883,15 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () use ($interne
 
         if (! $package) {
             return response()->json(['status' => 'error', 'message' => 'Internet package not found.'], 422);
+        }
+
+        $securityRuntime = app(SecurityRuntimeService::class);
+
+        if (! $securityRuntime->isOperatorAllowed($package->operator)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $securityRuntime->operatorBlockedMessage(),
+            ], 422);
         }
 
         $operatorKey = strtolower(preg_replace('/[^a-z]/i', '', (string) $package->operator));

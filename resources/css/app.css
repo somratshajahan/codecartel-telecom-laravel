@@ -10,3 +10,107 @@
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
+
+:root {
+    color-scheme: light;
+}
+
+html[data-theme='dark'] {
+    color-scheme: dark;
+}
+
+.cc-theme-switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.cc-theme-toggle-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.cc-theme-toggle-track {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    width: 4.5rem;
+    height: 2.4rem;
+    padding: 0.2rem;
+    border-radius: 9999px;
+    background: #f3f3f3;
+    box-shadow: inset 0.6rem 0.6rem 1.5rem rgba(15, 23, 42, 0.08);
+    transition: background 0.35s ease, box-shadow 0.35s ease;
+}
+
+.cc-theme-toggle-thumb {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 9999px;
+    background: #ffffff;
+    box-shadow: 0 0.5rem 1.2rem rgba(15, 23, 42, 0.12), inset -0.35rem -0.35rem 0.9rem rgba(15, 23, 42, 0.05);
+    transform: translateX(0);
+    transition: transform 0.35s ease, background 0.35s ease, box-shadow 0.35s ease;
+    overflow: hidden;
+}
+
+.cc-theme-icon {
+    position: absolute;
+    width: 1rem;
+    height: 1rem;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.cc-theme-icon-sun {
+    color: #facc15;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.cc-theme-icon-moon {
+    color: #e2e8f0;
+    opacity: 0;
+    transform: translateY(150%);
+}
+
+.cc-theme-toggle-input:focus-visible + .cc-theme-toggle-track {
+    outline: 2px solid #3b82f6;
+    outline-offset: 3px;
+}
+
+.cc-theme-toggle-input:checked + .cc-theme-toggle-track {
+    background: #1f1f21;
+    box-shadow: inset 0.6rem 0.6rem 1.5rem rgba(0, 0, 0, 0.45);
+}
+
+.cc-theme-toggle-input:checked + .cc-theme-toggle-track .cc-theme-toggle-thumb {
+    transform: translateX(2.1rem);
+    background: #2c2c2f;
+    box-shadow: 0 0.5rem 1.2rem rgba(0, 0, 0, 0.35), inset -0.35rem -0.35rem 0.9rem rgba(255, 255, 255, 0.06);
+}
+
+.cc-theme-toggle-input:checked + .cc-theme-toggle-track .cc-theme-icon-sun {
+    opacity: 0;
+    transform: translateY(-150%);
+}
+
+.cc-theme-toggle-input:checked + .cc-theme-toggle-track .cc-theme-icon-moon {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.cc-theme-switch:active .cc-theme-toggle-thumb {
+    width: 2.25rem;
+}

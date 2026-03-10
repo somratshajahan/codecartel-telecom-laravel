@@ -11,6 +11,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     <style>
+        html {
+            scroll-behavior: smooth;
+        }
+
         body {
             font-family: 'Inter', sans-serif;
         }
@@ -133,6 +137,94 @@
             background-color: #0084FF;
             color: white;
         }
+
+        .branding-slider-section {
+            background: radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 55%), linear-gradient(180deg, #e2e8f0 0%, #f8fafc 100%);
+            overflow: hidden;
+            min-height: calc(100vh - 72px);
+            display: flex;
+            align-items: center;
+        }
+
+        .branding-slider-shell {
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .branding-slider-stage {
+            min-height: 330px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            perspective: 1400px;
+        }
+
+        .branding-slider-box {
+            position: relative;
+            width: 92px;
+            height: 92px;
+            transform-style: preserve-3d;
+            animation: branding-slider-rotate 32s linear infinite;
+        }
+
+        .branding-slider-box:hover {
+            animation-play-state: paused;
+        }
+
+        @keyframes branding-slider-rotate {
+            0% {
+                transform: perspective(1000px) rotateY(0deg);
+            }
+
+            100% {
+                transform: perspective(1000px) rotateY(360deg);
+            }
+        }
+
+        .branding-slider-box span {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform-origin: center;
+            transform-style: preserve-3d;
+            transform: rotateY(calc((360deg / var(--total-slides)) * (var(--i) - 1))) translateZ(clamp(230px, 35vw, 390px));
+            -webkit-box-reflect: below 2px linear-gradient(transparent, transparent, rgba(4, 4, 4, 0.18));
+        }
+
+        .branding-slider-box span img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transition: 0.5s;
+            border-radius: 15px;
+            border: 4px double rgb(0, 0, 0);
+            object-fit: cover;
+            background: #fff;
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+        }
+
+        .branding-slider-box span img:hover {
+            transform: translateY(-2px);
+        }
+
+        @media (min-width: 768px) {
+            .branding-slider-shell {
+                width: calc(100% - 300px);
+            }
+
+            .branding-slider-stage {
+                min-height: 390px;
+            }
+
+            .branding-slider-box {
+                width: 120px;
+                height: 120px;
+            }
+        }
     </style>
 </head>
 
@@ -225,6 +317,29 @@
     </nav>
 
 
+
+    @if(($slides ?? collect())->isNotEmpty())
+    <section id="home" class="branding-slider-section pt-16 pb-10 md:pt-24 md:pb-14">
+        <div class="container mx-auto w-full px-4">
+            <div class="branding-slider-shell">
+                <div class="text-center max-w-3xl mx-auto mt-6 md:mt-10 mb-8 md:mb-12">
+                    <h1 class="text-3xl md:text-5xl font-extrabold text-slate-900">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</h1>
+                    <p class="mt-3 text-base md:text-lg text-slate-600">Fast recharge, drive, and internet service for all operators.</p>
+                </div>
+
+                <div class="branding-slider-stage">
+                    <div class="branding-slider-box" style="--total-slides: {{ max(($slides ?? collect())->count(), 1) }};">
+                        @foreach($slides as $slide)
+                        <span style="--i:{{ $loop->iteration }};">
+                            <img src="{{ asset('storage/' . $slide->image_path) }}" alt="Slide {{ $slide->slot_number }}">
+                        </span>
+                        @endforeach
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    @endif
 
     <!-- Telecom Operators Section -->
     <section id="operators" class="py-20 bg-base-200">
@@ -509,6 +624,22 @@
             </div>
         </div>
     </footer>
+
+    @if(filled(trim((string) optional($settings)->tawk_property_id)) && filled(trim((string) optional($settings)->tawk_widget_id)))
+    <script type="text/javascript">
+        var Tawk_API = Tawk_API || {},
+            Tawk_LoadStart = new Date();
+        (function() {
+            var s1 = document.createElement('script'),
+                s0 = document.getElementsByTagName('script')[0];
+            s1.async = true;
+            s1.src = 'https://embed.tawk.to/{{ trim((string) $settings->tawk_property_id) }}/{{ trim((string) $settings->tawk_widget_id) }}';
+            s1.charset = 'UTF-8';
+            s1.setAttribute('crossorigin', '*');
+            s0.parentNode.insertBefore(s1, s0);
+        })();
+    </script>
+    @endif
 </body>
 
 </html>

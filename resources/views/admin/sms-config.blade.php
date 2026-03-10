@@ -272,7 +272,7 @@
                                 <li><a>Modem Device</a></li>
                                 <li><a>Recharge Block List</a></li>
                                 <li><a>Api Settings</a></li>
-                            <li><a href="{{ route('admin.payment.gateway') }}">Payment Gateway</a></li>
+                                <li><a href="{{ route('admin.payment.gateway') }}">Payment Gateway</a></li>
                                 <li><a>Security Settings</a></li>
                                 <li><a>Deleted Accounts</a></li>
                             </ul>
@@ -334,6 +334,8 @@
                                 <li><a href="{{ route('admin.sms.config') }}" class="active">Mobile OTP Configuration</a></li>
                                 <li><a href="{{ route('admin.firebase.config') }}">Firebase Credentials</a></li>
                                 <li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li>
+                                <li><a href="{{ route('admin.recaptcha.config') }}">reCAPTCHA Credentials</a></li>
+                                <li><a href="{{ route('admin.tawk.config') }}">Tawk Chat Credentials</a></li>
                             </ul>
                         </details>
                     </li>

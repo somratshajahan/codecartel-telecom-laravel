@@ -77,6 +77,17 @@
                             </div>
                         </div>
 
+                        @if($matchedRouteLabels->isNotEmpty())
+                        <div class="rounded-2xl border border-base-300 bg-base-100 px-4 py-4">
+                            <div class="text-sm font-semibold text-base-content/70 mb-3">Matched Route / Provider</div>
+                            <div class="flex flex-wrap gap-2">
+                                @foreach($matchedRouteLabels as $routeLabel)
+                                <span class="badge badge-outline badge-primary px-3 py-3">{{ $routeLabel }}</span>
+                                @endforeach
+                            </div>
+                        </div>
+                        @endif
+
                         <div class="space-y-3">
                             @foreach($summaryRows as $row)
                             <div class="rounded-2xl bg-base-200 px-4 py-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -121,7 +132,7 @@
                             <summary>Reports</summary>
                             <ul>
                                 <li><a>Receive reports</a></li>
-                                <li><a>Balance Reports</a></li>
+                                <li><a href="{{ route('admin.balance.report') }}">Balance Reports</a></li>
                                 <li><a href="{{ route('admin.operator.reports') }}">Operator Reports</a></li>
                                 <li><a href="{{ route('admin.daily.reports') }}">Daily Reports</a></li>
                                 <li><a>Total usages</a></li>

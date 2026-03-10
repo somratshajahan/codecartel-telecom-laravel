@@ -17,7 +17,7 @@
     </style>
 </head>
 
-<body class="min-h-screen bg-base-200">
+<body class="min-h-screen bg-base-200 text-base-content transition-colors duration-300">
     @php
     $canManageResellers = auth()->user()?->hasPermission('manage_resellers');
     $resellerPermissionOptions = $resellerPermissionOptions ?? \App\Models\User::resellerPermissionOptions();
@@ -37,7 +37,8 @@
                     </label>
                 </div>
                 <div class="flex-1"><a href="{{ route('admin.dashboard') }}" class="text-xl font-bold px-2 hover:text-primary transition-colors">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }} - Admin</a></div>
-                <div class="flex-none gap-2">
+                <div class="flex-none flex items-center gap-2">
+                    @include('partials.theme-toggle')
                     <button class="btn btn-square btn-ghost">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
@@ -497,8 +498,9 @@
                 $securitySections = [
                 [
                 'title' => 'Access & Login',
-                'description' => 'SSL redirect, capcha, password ar session related controls.',
+                'description' => 'SSL redirect, capcha, Google reCAPTCHA, password ar session related controls.',
                 'fields' => [
+                ['name' => 'security_recaptcha', 'label' => 'Google reCAPTCHA', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
                 ['name' => 'security_ssl_https_redirect', 'label' => 'SSL/HTTPS Redirect', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
                 ['name' => 'security_admin_login_captcha', 'label' => 'Admin login capcha', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
                 ['name' => 'security_reseller_login_captcha', 'label' => 'Reseller login capcha', 'type' => 'select', 'options' => $securitySettingOptions['enable_disable']],
@@ -576,7 +578,7 @@
                     <form method="POST" action="{{ route('admin.security.modual.update') }}" class="space-y-6">
                         @csrf
                         <fieldset class="space-y-6" {{ $securitySettingsTableReady ? '' : 'disabled' }}>
-                            <div class="grid gap-6 xl:grid-cols-3">
+                            <div class="space-y-6 max-w-6xl">
                                 @foreach($securitySections as $section)
                                 <div class="card bg-base-100 shadow-xl">
                                     <div class="card-body space-y-4">
@@ -689,6 +691,9 @@
                                         <option value="">--Any--</option>
                                         <option value="drive" {{ ($service ?? '') == 'drive' ? 'selected' : '' }}>Drive</option>
                                         <option value="bkash" {{ ($service ?? '') == 'bkash' ? 'selected' : '' }}>Bkash</option>
+                                        <option value="nagad" {{ ($service ?? '') == 'nagad' ? 'selected' : '' }}>Nagad</option>
+                                        <option value="rocket" {{ ($service ?? '') == 'rocket' ? 'selected' : '' }}>Rocket</option>
+                                        <option value="upay" {{ ($service ?? '') == 'upay' ? 'selected' : '' }}>Upay</option>
                                         <option value="flexi" {{ ($service ?? '') == 'flexi' ? 'selected' : '' }}>Flexi</option>
                                         <option value="internet" {{ ($service ?? '') == 'internet' ? 'selected' : '' }}>Internet</option>
                                     </select>
@@ -746,8 +751,8 @@
                                             <td>
                                                 @if($item->service === 'drive')
                                                 <span class="badge badge-info">Drive</span>
-                                                @elseif($item->service === 'bkash')
-                                                <span class="badge badge-warning">Bkash</span>
+                                                @elseif($item->service === 'mobile_banking')
+                                                <span class="badge badge-warning">Mobile Banking</span>
                                                 @elseif($item->service === 'flexi')
                                                 <span class="badge badge-secondary">Flexi</span>
                                                 @else
@@ -919,7 +924,10 @@
                             @php
                             $selectedRequestKeys = old('request_keys', []);
                             $hasBulkSelectableRequests = $requests->contains(function ($item) {
-                            return ! in_array(strtolower((string) ($item->request_type ?? 'drive')), ['flexi', 'bkash', 'nagad', 'rocket', 'upay'], true);
+                            $requestType = strtolower((string) ($item->request_type ?? 'drive'));
+                            $isManualPaymentRequest = ($item->request_category ?? '') === 'manual_payment';
+
+                            return $requestType !== 'flexi' && ! $isManualPaymentRequest;
                             });
                             @endphp
                             <div class="overflow-x-auto">
@@ -1474,12 +1482,13 @@
                             </summary>
                             <ul>
                                 <li><a href="{{ route('admin.all.history') }}">All History</a></li>
-                                <li><a>Flexiload</a></li>
+                                <li><a href="{{ route('admin.all.history', ['service' => 'flexi']) }}">Flexiload</a></li>
                                 <li><a href="{{ route('admin.drive.history') }}">Drive</a></li>
                                 <li><a href="{{ route('admin.internet.history') }}">Internet Pack</a></li>
-                                <li><a>Bkash</a></li>
-                                <li><a>Nagad</a></li>
-                                <li><a>Rocket</a></li>
+                                <li><a href="{{ route('admin.all.history', ['service' => 'bkash']) }}">Bkash</a></li>
+                                <li><a href="{{ route('admin.all.history', ['service' => 'nagad']) }}">Nagad</a></li>
+                                <li><a href="{{ route('admin.all.history', ['service' => 'rocket']) }}">Rocket</a></li>
+                                <li><a href="{{ route('admin.all.history', ['service' => 'upay']) }}">Upay</a></li>
                                 <li><a>Success Refund</a></li>
                                 <li><a>Islami Bank</a></li>
                             </ul>
@@ -1605,7 +1614,7 @@
                         </a>
                     </li>
                     <li>
-                        <details {{ request()->routeIs('admin.daily.reports') || request()->routeIs('admin.operator.reports') || request()->routeIs('admin.sales.report') ? 'open' : '' }}>
+                        <details {{ request()->routeIs('admin.balance.report') || request()->routeIs('admin.daily.reports') || request()->routeIs('admin.operator.reports') || request()->routeIs('admin.sales.report') ? 'open' : '' }}>
                             <summary>
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -1614,7 +1623,7 @@
                             </summary>
                             <ul>
                                 <li><a>Receive reports</a></li>
-                                <li><a>Balance Reports</a></li>
+                                <li><a href="{{ route('admin.balance.report') }}" class="{{ request()->routeIs('admin.balance.report') ? 'active bg-primary text-primary-content' : '' }}">Balance Reports</a></li>
                                 <li><a href="{{ route('admin.operator.reports') }}" class="{{ request()->routeIs('admin.operator.reports') ? 'active bg-primary text-primary-content' : '' }}">Operator Reports</a></li>
                                 <li><a href="{{ route('admin.daily.reports') }}" class="{{ request()->routeIs('admin.daily.reports') ? 'active bg-primary text-primary-content' : '' }}">Daily Reports</a></li>
                                 <li><a>Total usages</a></li>
@@ -1639,7 +1648,11 @@
                                     </a>
                                 </li>
                                 <li><a>Rate Modules</a></li>
-                                <li><a>Deposit</a></li>
+                                <li>
+                                    <a href="{{ route('admin.deposit') }}" class="{{ request()->routeIs('admin.deposit') ? 'active' : '' }}">
+                                        Deposit
+                                    </a>
+                                </li>
                                 <li><a>Modem List</a></li>
                                 <li><a>Modem Device</a></li>
                                 <li>
@@ -1652,7 +1665,7 @@
                                         Api Settings
                                     </a>
                                 </li>
-                                <li><a href="{{ route('admin.payment.gateway') }}">Payment Gateway</a></li>
+                                <li><a href="{{ route('admin.payment.gateway') }}" class="{{ request()->routeIs('admin.payment.gateway') ? 'active' : '' }}">Payment Gateway</a></li>
                                 <li>
                                     <a href="{{ route('admin.security.modual') }}" class="{{ request()->routeIs('admin.security.modual*') ? 'active' : '' }}">
                                         Security Modual

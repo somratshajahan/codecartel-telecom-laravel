@@ -1,3 +1,8 @@
+@php
+    $recaptchaEnabled = optional($settings)->security_recaptcha === 'enable'
+        && filled(optional($settings)->recaptcha_site_key)
+        && filled(optional($settings)->recaptcha_secret_key);
+@endphp
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 
@@ -9,6 +14,9 @@
     <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    @if($recaptchaEnabled)
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    @endif
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     <style>
         body {
@@ -69,7 +77,13 @@
                         <label class="label">
                             <span class="label-text font-medium">Password</span>
                         </label>
-                        <input type="password" name="password" placeholder="••••••••" class="input input-bordered w-full" required />
+                        <div class="relative">
+                            <input id="admin-password" type="password" name="password" placeholder="••••••••" class="input input-bordered w-full pr-12" required />
+                            <button type="button" class="absolute inset-y-0 right-0 flex items-center px-3 text-base-content/60 transition hover:text-base-content" data-password-toggle="admin-password" aria-label="Show password" aria-pressed="false">
+                                <svg data-password-toggle-show-icon xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" class="h-5 w-5" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12s3.75-6.75 9.75-6.75S21.75 12 21.75 12s-3.75 6.75-9.75 6.75S2.25 12 2.25 12Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" /></svg>
+                                <svg data-password-toggle-hide-icon xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" class="hidden h-5 w-5" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18" /><path stroke-linecap="round" stroke-linejoin="round" d="M10.58 10.58A3.75 3.75 0 0 0 15.42 15.42" /><path stroke-linecap="round" stroke-linejoin="round" d="M9.88 5.09A10.94 10.94 0 0 1 12 4.88c6 0 9.75 7.12 9.75 7.12a18.78 18.78 0 0 1-4.04 4.94" /><path stroke-linecap="round" stroke-linejoin="round" d="M6.61 6.61A18.73 18.73 0 0 0 2.25 12s3.75 6.75 9.75 6.75a10.7 10.7 0 0 0 2.53-.3" /></svg>
+                            </button>
+                        </div>
                     </div>
 
                     <div class="form-control mt-4">
@@ -96,6 +110,15 @@
                     </div>
                     @endif
 
+                    @if($recaptchaEnabled)
+                    <div class="form-control mt-4">
+                        <label class="label">
+                            <span class="label-text font-medium">Google reCAPTCHA</span>
+                        </label>
+                        <div class="g-recaptcha" data-sitekey="{{ $settings->recaptcha_site_key }}"></div>
+                    </div>
+                    @endif
+
                     @error('email')
                     <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
                     @enderror
@@ -103,6 +126,9 @@
                     <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
                     @enderror
                     @error('captcha')
+                    <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
+                    @enderror
+                    @error('g-recaptcha-response')
                     <div class="text-red-500 text-sm mt-2">{{ $message }}</div>
                     @enderror
                     <div class="form-control mt-6">

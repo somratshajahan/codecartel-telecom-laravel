@@ -95,7 +95,7 @@
                             <summary>Reports</summary>
                             <ul>
                                 <li><a>Receive reports</a></li>
-                                <li><a>Balance Reports</a></li>
+                                <li><a href="{{ route('admin.balance.report') }}">Balance Reports</a></li>
                                 <li><a href="{{ route('admin.operator.reports') }}">Operator Reports</a></li>
                                 <li><a href="{{ route('admin.daily.reports') }}" class="active bg-primary text-primary-content">Daily Reports</a></li>
                                 <li><a>Total usages</a></li>

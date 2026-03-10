@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\FirebasePushNotificationService;
-use App\Services\SecurityRuntimeService;
-use Illuminate\Support\Facades\DB;
+use App\Models\BrandingSlide;
 use App\Models\HomepageSetting;
 use App\Models\Operator;
+use App\Services\FirebasePushNotificationService;
+use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 
 class HomepageController extends Controller
@@ -16,6 +18,15 @@ class HomepageController extends Controller
     {
         $settings = HomepageSetting::first();
         $apiDocs = self::providerApiDocs();
+        $slides = collect();
+
+        if (Schema::hasTable('branding_slides')) {
+            $slides = BrandingSlide::query()
+                ->where('is_active', true)
+                ->whereNotNull('image_path')
+                ->orderBy('slot_number')
+                ->get();
+        }
 
         $operators = Operator::where('is_active', true)
             ->orderBy('sort_order')
@@ -38,7 +49,7 @@ class HomepageController extends Controller
             }
         }
 
-        return view('welcome', compact('settings', 'operators', 'noticeData', 'loginNotice', 'apiDocs'));
+        return view('welcome', compact('settings', 'operators', 'noticeData', 'loginNotice', 'apiDocs', 'slides'));
     }
 
     public static function providerApiDocs(): array
@@ -232,6 +243,8 @@ class HomepageController extends Controller
     {
         $request->validate([
             'logos.*' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:2048',
+            'recaptcha_site_key' => ['nullable', 'string', 'max:255'],
+            'recaptcha_secret_key' => ['nullable', 'string', 'max:4096'],
         ]);
 
         $settings = HomepageSetting::firstOrCreate([]);
@@ -244,12 +257,21 @@ class HomepageController extends Controller
             'footer_address',
             'footer_phone',
             'footer_email',
+            'recaptcha_site_key',
+            'recaptcha_secret_key',
             'social_whatsapp_url',
             'social_youtube_url',
             'social_shopee_url',
             'social_telegram_url',
             'social_messenger_url',
         ]);
+
+        $data['recaptcha_site_key'] = filled(trim((string) ($data['recaptcha_site_key'] ?? '')))
+            ? trim((string) $data['recaptcha_site_key'])
+            : null;
+        $data['recaptcha_secret_key'] = filled(trim((string) ($data['recaptcha_secret_key'] ?? '')))
+            ? trim((string) $data['recaptcha_secret_key'])
+            : null;
 
         if ($request->hasFile('company_logo')) {
             $logo = $request->file('company_logo');
@@ -317,6 +339,20 @@ class HomepageController extends Controller
         $settings = HomepageSetting::firstOrCreate([]);
 
         return view('admin.google-otp-config', compact('settings'));
+    }
+
+    public function recaptchaConfig()
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+
+        return view('admin.recaptcha-config', compact('settings'));
+    }
+
+    public function tawkChatConfig()
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+
+        return view('admin.tawk-chat-config', compact('settings'));
     }
 
     public function updateSmsConfig(Request $request)
@@ -387,6 +423,46 @@ class HomepageController extends Controller
         return redirect()
             ->route('admin.google.otp.config')
             ->with('success', 'Google OTP settings updated successfully.');
+    }
+
+    public function updateRecaptchaConfig(Request $request)
+    {
+        $validated = $request->validate([
+            'recaptcha_site_key' => ['nullable', 'string', 'max:255'],
+            'recaptcha_secret_key' => ['nullable', 'string', 'max:4096'],
+        ]);
+
+        $recaptchaSiteKey = trim((string) ($validated['recaptcha_site_key'] ?? ''));
+        $recaptchaSecretKey = trim((string) ($validated['recaptcha_secret_key'] ?? ''));
+
+        HomepageSetting::firstOrCreate([])->update([
+            'recaptcha_site_key' => $recaptchaSiteKey !== '' ? $recaptchaSiteKey : null,
+            'recaptcha_secret_key' => $recaptchaSecretKey !== '' ? $recaptchaSecretKey : null,
+        ]);
+
+        return redirect()
+            ->route('admin.recaptcha.config')
+            ->with('success', 'reCAPTCHA settings updated successfully.');
+    }
+
+    public function updateTawkChatConfig(Request $request)
+    {
+        $validated = $request->validate([
+            'tawk_property_id' => ['nullable', 'string', 'max:255'],
+            'tawk_widget_id' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $tawkPropertyId = trim((string) ($validated['tawk_property_id'] ?? ''));
+        $tawkWidgetId = trim((string) ($validated['tawk_widget_id'] ?? ''));
+
+        HomepageSetting::firstOrCreate([])->update([
+            'tawk_property_id' => $tawkPropertyId !== '' ? $tawkPropertyId : null,
+            'tawk_widget_id' => $tawkWidgetId !== '' ? $tawkWidgetId : null,
+        ]);
+
+        return redirect()
+            ->route('admin.tawk.config')
+            ->with('success', 'Tawk Chat settings updated successfully.');
     }
 
     public function firebaseBootstrap(FirebasePushNotificationService $pushService)

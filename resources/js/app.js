@@ -5,6 +5,109 @@ import 'nprogress/nprogress.css';
 NProgress.configure({ showSpinner: false });
 
 const FIREBASE_VERSION = '10.13.2';
+const THEME_STORAGE_KEY = 'cc_theme';
+const LIGHT_THEME = 'light';
+const DARK_THEME = 'dark';
+
+function storedTheme() {
+    try {
+        const theme = window.localStorage.getItem(THEME_STORAGE_KEY);
+
+        return theme === DARK_THEME || theme === LIGHT_THEME ? theme : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+function preferredTheme() {
+    const theme = storedTheme();
+
+    if (theme) {
+        return theme;
+    }
+
+    const mediaQuery = typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-color-scheme: dark)')
+        : null;
+
+    return mediaQuery?.matches ? DARK_THEME : LIGHT_THEME;
+}
+
+function applyTheme(theme) {
+    const nextTheme = theme === DARK_THEME ? DARK_THEME : LIGHT_THEME;
+
+    document.documentElement.setAttribute('data-theme', nextTheme);
+    document.documentElement.style.colorScheme = nextTheme;
+
+    return nextTheme;
+}
+
+function syncThemeToggles(theme) {
+    const isDark = theme === DARK_THEME;
+
+    document.querySelectorAll('[data-theme-toggle]').forEach(toggle => {
+        toggle.checked = isDark;
+        toggle.setAttribute('aria-checked', isDark ? 'true' : 'false');
+    });
+}
+
+function setTheme(theme, persist = true) {
+    const nextTheme = applyTheme(theme);
+
+    if (persist) {
+        try {
+            window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+        } catch (error) {
+            // Ignore storage errors and keep the in-memory theme applied.
+        }
+    }
+
+    syncThemeToggles(nextTheme);
+}
+
+function initializeThemeToggle() {
+    const currentTheme = applyTheme(preferredTheme());
+
+    syncThemeToggles(currentTheme);
+
+    document.querySelectorAll('[data-theme-toggle]').forEach(toggle => {
+        toggle.addEventListener('change', event => {
+            setTheme(event.currentTarget.checked ? DARK_THEME : LIGHT_THEME);
+        });
+    });
+}
+
+function initializePasswordToggles() {
+    document.querySelectorAll('[data-password-toggle]').forEach(button => {
+        const inputId = button.dataset.passwordToggle;
+        const input = inputId ? document.getElementById(inputId) : null;
+
+        if (!input) {
+            return;
+        }
+
+        const showIcon = button.querySelector('[data-password-toggle-show-icon]');
+        const hideIcon = button.querySelector('[data-password-toggle-hide-icon]');
+
+        const syncToggleState = isVisible => {
+            button.setAttribute('aria-pressed', isVisible ? 'true' : 'false');
+            button.setAttribute('aria-label', isVisible ? 'Hide password' : 'Show password');
+            showIcon?.classList.toggle('hidden', isVisible);
+            hideIcon?.classList.toggle('hidden', !isVisible);
+        };
+
+        syncToggleState(input.type === 'text');
+
+        button.addEventListener('click', () => {
+            const isVisible = input.type === 'text';
+
+            input.type = isVisible ? 'password' : 'text';
+            syncToggleState(!isVisible);
+        });
+    });
+}
+
+applyTheme(preferredTheme());
 
 function loadExternalScript(src) {
     return new Promise((resolve, reject) => {
@@ -133,6 +236,9 @@ async function initializeFirebasePush() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    initializeThemeToggle();
+    initializePasswordToggles();
+
     document.querySelectorAll('a').forEach(link => {
         link.addEventListener('click', () => {
             NProgress.start();

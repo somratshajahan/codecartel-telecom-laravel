@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Api;
 use App\Models\User;
+use App\Models\DepositSetting;
 use App\Models\HomepageSetting;
 use App\Models\ManualPaymentRequest;
 use App\Models\Operator;
@@ -241,6 +243,11 @@ class AdminController extends Controller
             ->unique()
             ->values()
             ->all();
+    }
+
+    protected function depositBonusPercentFor(User $user, string $method): float
+    {
+        return DepositSetting::bonusPercent($user->level, $method);
     }
 
     /**
@@ -556,6 +563,7 @@ class AdminController extends Controller
             'is_admin' => false,
             'is_active' => true,
             'level' => $validated['level'],
+            'main_bal' => DepositSetting::adminOpeningBalance($validated['level']),
             'parent_id' => auth()->id(),
             'permissions' => json_encode($this->filterPermissionKeys($validated['permissions'] ?? [], $allowedPermissionKeys)),
         ]);
@@ -1213,12 +1221,12 @@ class AdminController extends Controller
             ->with('user')
             ->get()
             ->map(function ($item) {
-                $item->request_type = $item->method;
+                $item->request_type = 'mobile banking';
                 $item->request_category = 'manual_payment';
                 $item->display_status = $item->status;
                 $item->operator = $item->method;
                 $item->mobile = $item->sender_number;
-                $item->type = $item->transaction_id;
+                $item->type = $item->note ?: $item->transaction_id;
                 return $item;
             })
             : collect();
@@ -1246,7 +1254,15 @@ class AdminController extends Controller
 
         if ($service) {
             $requests = $requests->filter(function ($item) use ($service) {
-                return strtolower((string) ($item->request_type ?? 'Drive')) === strtolower($service);
+                $serviceValue = strtolower(trim((string) $service));
+                $requestType = strtolower((string) ($item->request_type ?? 'Drive'));
+                $operator = strtolower((string) ($item->operator ?? ''));
+
+                if (($item->request_category ?? null) === 'manual_payment') {
+                    return $requestType === $serviceValue || $operator === $serviceValue;
+                }
+
+                return $requestType === $serviceValue;
             })->values();
         }
 
@@ -2200,25 +2216,36 @@ class AdminController extends Controller
             ? trim((string) $validated['admin_note'])
             : null;
         $historyDescription = $adminNote ?: ($manualPaymentRequest->method . ' manual payment approved. TxID: ' . $manualPaymentRequest->transaction_id);
+        $bonusPercent = $this->depositBonusPercentFor($user, $manualPaymentRequest->method);
+        $bonusAmount = round(((float) $manualPaymentRequest->amount * $bonusPercent) / 100, 2);
+        $creditedAmount = round((float) $manualPaymentRequest->amount + $bonusAmount, 2);
+        $balanceType = app(SecurityRuntimeService::class)->manualPaymentBalanceType();
+        $balanceTypeLabel = strtolower($this->balanceTypeLabel($balanceType));
 
-        \DB::transaction(function () use ($manualPaymentRequest, $user, $adminNote, $historyDescription) {
+        \DB::transaction(function () use ($manualPaymentRequest, $user, $adminNote, $historyDescription, $creditedAmount, $balanceType) {
             $manualPaymentRequest->update([
                 'status' => 'approved',
                 'admin_note' => $adminNote,
             ]);
 
-            $user->main_bal += $manualPaymentRequest->amount;
+            $user->{$balanceType} += $creditedAmount;
             $user->save();
 
             if (Schema::hasTable('balance_add_history')) {
-                $this->storeBalanceHistory($user, $manualPaymentRequest->amount, strtolower($manualPaymentRequest->method), $historyDescription);
+                $this->storeBalanceHistory($user, $creditedAmount, strtolower($manualPaymentRequest->method), $historyDescription);
             }
         });
+
+        $notificationMessage = 'Your ' . $manualPaymentRequest->method . ' balance request of ' . number_format((float) $manualPaymentRequest->amount, 2) . ' Tk was approved and ' . number_format($creditedAmount, 2) . ' Tk was added to your ' . $balanceTypeLabel . '.';
+
+        if ($bonusAmount !== 0.0) {
+            $notificationMessage .= ' Bonus: ' . number_format($bonusAmount, 2) . ' Tk (' . rtrim(rtrim(number_format($bonusPercent, 2), '0'), '.') . '%).';
+        }
 
         $this->notifyUser(
             $user,
             'Balance Request Approved',
-            'Your ' . $manualPaymentRequest->method . ' balance request of ' . number_format((float) $manualPaymentRequest->amount, 2) . ' Tk was approved and added to your main balance.',
+            $notificationMessage,
             route('dashboard'),
         );
 
@@ -2609,6 +2636,7 @@ class AdminController extends Controller
     protected function securitySettingsDefaults(): array
     {
         return [
+            'security_recaptcha' => 'disable',
             'security_ssl_https_redirect' => 'disable',
             'security_admin_login_captcha' => 'disable',
             'security_reseller_login_captcha' => 'disable',
@@ -2714,6 +2742,7 @@ class AdminController extends Controller
         $options = $this->securitySettingOptions();
 
         return [
+            'security_recaptcha' => ['required', Rule::in(array_keys($options['enable_disable']))],
             'security_ssl_https_redirect' => ['required', Rule::in(array_keys($options['enable_disable']))],
             'security_admin_login_captcha' => ['required', Rule::in(array_keys($options['enable_disable']))],
             'security_reseller_login_captcha' => ['required', Rule::in(array_keys($options['enable_disable']))],
@@ -2804,6 +2833,61 @@ class AdminController extends Controller
             'balanceYesterday',
             'operatorSales',
             'bankingSales'
+        ));
+    }
+
+    /**
+     * Show Balance Report page.
+     */
+    public function balanceReport(Request $request)
+    {
+        $settings = HomepageSetting::firstOrCreate([]);
+        $pendingCount = $this->pendingRequestCount();
+
+        $resellerPositiveCount = 0;
+        $resellerBalanceTotal = 0.0;
+
+        if (Schema::hasColumn('users', 'main_bal')) {
+            $resellerBaseQuery = User::query()->where('is_admin', false);
+            $resellerPositiveCount = (clone $resellerBaseQuery)
+                ->where('main_bal', '>', 0)
+                ->count();
+            $resellerBalanceTotal = (float) (clone $resellerBaseQuery)->sum('main_bal');
+        }
+
+        $simBalanceRows = collect();
+
+        if (Schema::hasTable('apis')) {
+            $simBalanceRows = Api::query()
+                ->orderBy('title')
+                ->orderBy('provider')
+                ->get()
+                ->map(function (Api $connection, int $index) {
+                    $label = collect([
+                        trim((string) ($connection->title ?? '')),
+                        trim((string) ($connection->provider ?? '')),
+                    ])->filter()->unique()->implode(' / ');
+
+                    return [
+                        'nr' => $index + 1,
+                        'operator' => $label !== '' ? $label : 'N/A',
+                        'balance' => (float) ($connection->balance ?? 0),
+                    ];
+                })
+                ->values();
+        }
+
+        $simBalanceTotal = (float) $simBalanceRows->sum('balance');
+        $balanceStatus = $simBalanceTotal - $resellerBalanceTotal;
+
+        return view('admin.balance-report', compact(
+            'settings',
+            'pendingCount',
+            'resellerPositiveCount',
+            'resellerBalanceTotal',
+            'simBalanceRows',
+            'simBalanceTotal',
+            'balanceStatus'
         ));
     }
 
@@ -2914,6 +2998,14 @@ class AdminController extends Controller
             })
             ->values();
 
+        $matchedRouteLabels = $reportEntries
+            ->pluck('route_label')
+            ->filter(function ($label) {
+                return filled($label);
+            })
+            ->unique()
+            ->values();
+
         $totalAmount = (float) $summaryRows->sum('amount');
 
         return view('admin.sales-report', compact(
@@ -2924,6 +3016,7 @@ class AdminController extends Controller
             'selectedSimTo',
             'dateFrom',
             'dateTo',
+            'matchedRouteLabels',
             'summaryRows',
             'totalAmount'
         ));
@@ -3574,6 +3667,7 @@ class AdminController extends Controller
     {
         $settings = HomepageSetting::first();
         $operators = Operator::all();
+        $manualHistoryTypes = ['bkash', 'nagad', 'rocket', 'upay'];
         // Get filter parameters
         $show = $request->query('show', 50);
         $number = $request->query('number');
@@ -3680,10 +3774,9 @@ class AdminController extends Controller
             ->orderBy('recharge_history.created_at', 'desc')
             ->get()
             ->map(function ($item) {
-                $service = 'regular';
-                if (in_array($item->type, ['Bkash', 'Nagad', 'Rocket', 'Upay'])) {
-                    $service = 'bkash';
-                }
+                $method = strtolower(trim((string) ($item->type ?? '')));
+                $isMobileBanking = in_array($method, ['bkash', 'nagad', 'rocket', 'upay'], true);
+                $service = $isMobileBanking ? 'mobile_banking' : 'regular';
 
                 return (object) [
                     'id' => $item->id,
@@ -3694,16 +3787,89 @@ class AdminController extends Controller
                     'amount' => $item->amount,
                     'cost' => $item->amount,  // Same as amount for recharge
                     'service' => $service,
+                    'manual_method' => $isMobileBanking ? $method : null,
                     'status' => 'success',
                     'original_status' => 'success',
                     'balance' => $item->main_bal,
                     'trnx_id' => null,
-                    'description' => 'Recharge',
+                    'description' => $item->description ?? ($isMobileBanking ? 'Mobile Banking Recharge' : 'Recharge'),
                     'sim_balance' => null,
                     'route' => null,
                     'created_at' => $item->created_at,
                 ];
             });
+
+        $approvedManualRequests = collect();
+
+        if (Schema::hasTable('manual_payment_requests')) {
+            $approvedManualRequests = ManualPaymentRequest::query()
+                ->where('status', 'approved')
+                ->whereBetween('updated_at', [$startDate->copy()->subDay(), $endDate->copy()->addDay()])
+                ->orderBy('updated_at', 'desc')
+                ->get()
+                ->groupBy(function ($item) {
+                    return $item->user_id . '|' . strtolower(trim((string) ($item->method ?? '')));
+                });
+        }
+
+        $manualBalanceHistory = collect();
+
+        if (Schema::hasTable('balance_add_history')) {
+            $manualBalanceHistoryQuery = \DB::table('balance_add_history')
+                ->join('users', 'balance_add_history.user_id', '=', 'users.id')
+                ->select('balance_add_history.*', 'users.name as user_name');
+
+            if (Schema::hasColumn('users', 'bank_bal')) {
+                $manualBalanceHistoryQuery->addSelect('users.bank_bal as user_bank_bal');
+            } else {
+                $manualBalanceHistoryQuery->selectRaw('0 as user_bank_bal');
+            }
+
+            $manualBalanceHistory = $manualBalanceHistoryQuery
+                ->whereIn('balance_add_history.type', $manualHistoryTypes)
+                ->whereBetween('balance_add_history.created_at', [$startDate, $endDate])
+                ->orderBy('balance_add_history.created_at', 'desc')
+                ->get()
+                ->map(function ($item) use ($approvedManualRequests) {
+                    $method = strtolower(trim((string) ($item->type ?? '')));
+                    $operator = match ($method) {
+                        'bkash' => 'Bkash',
+                        'nagad' => 'Nagad',
+                        'rocket' => 'Rocket',
+                        'upay' => 'Upay',
+                        default => ucfirst($method ?: 'Mobile Banking'),
+                    };
+                    $matchedManualRequest = $approvedManualRequests
+                        ->get($item->user_id . '|' . $method, collect())
+                        ->sortBy(function ($manualRequest) use ($item) {
+                            $historyTime = \Carbon\Carbon::parse($item->created_at);
+                            $requestTime = \Carbon\Carbon::parse($manualRequest->updated_at ?? $manualRequest->created_at);
+
+                            return abs($requestTime->diffInSeconds($historyTime, false));
+                        })
+                        ->first();
+
+                    return (object) [
+                        'id' => $item->id,
+                        'user' => (object) ['name' => $item->user_name ?? 'N/A'],
+                        'user_id' => $item->user_id,
+                        'operator' => $operator,
+                        'mobile' => $matchedManualRequest->sender_number ?? '-',
+                        'amount' => $item->amount ?? 0,
+                        'cost' => $item->amount ?? 0,
+                        'service' => 'mobile_banking',
+                        'manual_method' => $method,
+                        'status' => 'success',
+                        'original_status' => 'success',
+                        'balance' => $item->user_bank_bal ?? 0,
+                        'trnx_id' => null,
+                        'description' => trim((string) ($item->description ?? '')) ?: ($operator . ' Balance Add'),
+                        'sim_balance' => null,
+                        'route' => null,
+                        'created_at' => $item->created_at,
+                    ];
+                });
+        }
 
         $flexiHistory = Schema::hasTable('flexi_requests')
             ? \App\Models\FlexiRequest::with('user')
@@ -3745,6 +3911,7 @@ class AdminController extends Controller
             ->concat($regularRequests)
             ->concat($regularRechargeHistory)
             ->concat($flexiHistory)
+            ->concat($manualBalanceHistory)
             ->sortByDesc('created_at')
             ->values();
 
@@ -3762,8 +3929,19 @@ class AdminController extends Controller
         }
 
         if ($service) {
-            $allHistory = $allHistory->filter(function ($item) use ($service) {
-                return $item->service === $service;
+            $serviceValue = strtolower(trim((string) $service));
+
+            $allHistory = $allHistory->filter(function ($item) use ($serviceValue, $manualHistoryTypes) {
+                $itemService = strtolower((string) ($item->service ?? ''));
+
+                if ($itemService === 'mobile_banking') {
+                    $manualMethod = strtolower((string) ($item->manual_method ?? ''));
+
+                    return $serviceValue === 'mobile_banking'
+                        || (in_array($serviceValue, $manualHistoryTypes, true) && $manualMethod === $serviceValue);
+                }
+
+                return $itemService === $serviceValue;
             })->values();
         }
 

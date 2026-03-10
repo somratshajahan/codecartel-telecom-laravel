@@ -116,21 +116,31 @@
                                         <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
                                             <div class="card bg-base-200 shadow-sm">
                                                 <div class="card-body space-y-4">
-                                                    <h3 class="card-title text-lg">SSLCommerz</h3>
+                                                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                                        <h3 class="card-title text-lg">SSLCommerz</h3>
+                                                        <button type="button" id="fill-sslcommerz-sandbox" class="btn btn-info btn-outline btn-sm">Use Sandbox Demo</button>
+                                                    </div>
+
+                                                    <div class="rounded-xl border border-info/30 bg-info/10 p-3 text-sm space-y-1">
+                                                        <p class="font-semibold">Sandbox demo credential</p>
+                                                        <p>Store ID: <span class="font-mono">testbox</span></p>
+                                                        <p>Password: <span class="font-mono">qwerty</span></p>
+                                                        <p class="opacity-70">Quick testing এর জন্য button click করলে auto-fill হবে এবং mode sandbox set হবে।</p>
+                                                    </div>
 
                                                     <div class="form-control">
                                                         <label class="label"><span class="label-text font-medium">Store ID</span></label>
-                                                        <input type="text" name="sslcommerz_store_id" class="input input-bordered w-full" value="{{ old('sslcommerz_store_id', $branding->sslcommerz_store_id ?? '') }}" placeholder="e.g. testbox" />
+                                                        <input id="sslcommerz_store_id" type="text" name="sslcommerz_store_id" class="input input-bordered w-full" value="{{ old('sslcommerz_store_id', $branding->sslcommerz_store_id ?? '') }}" placeholder="e.g. testbox" />
                                                     </div>
 
                                                     <div class="form-control">
                                                         <label class="label"><span class="label-text font-medium">Store Password</span></label>
-                                                        <input type="password" name="sslcommerz_store_password" class="input input-bordered w-full" value="{{ old('sslcommerz_store_password', $branding->sslcommerz_store_password ?? '') }}" placeholder="e.g. test_password" />
+                                                        <input id="sslcommerz_store_password" type="password" name="sslcommerz_store_password" class="input input-bordered w-full" value="{{ old('sslcommerz_store_password', $branding->sslcommerz_store_password ?? '') }}" placeholder="e.g. qwerty" />
                                                     </div>
 
                                                     <div class="form-control">
                                                         <label class="label"><span class="label-text font-medium">Mode</span></label>
-                                                        <select name="sslcommerz_mode" class="select select-bordered w-full">
+                                                        <select id="sslcommerz_mode" name="sslcommerz_mode" class="select select-bordered w-full">
                                                             <option value="sandbox" @selected(old('sslcommerz_mode', $branding->sslcommerz_mode ?? 'sandbox') === 'sandbox')>Sandbox</option>
                                                             <option value="live" @selected(old('sslcommerz_mode', $branding->sslcommerz_mode ?? 'sandbox') === 'live')>Live</option>
                                                         </select>
@@ -217,6 +227,34 @@
             </aside>
         </div>
     </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const fillSandboxButton = document.getElementById('fill-sslcommerz-sandbox');
+
+            if (!fillSandboxButton) {
+                return;
+            }
+
+            fillSandboxButton.addEventListener('click', function() {
+                const storeIdInput = document.getElementById('sslcommerz_store_id');
+                const storePasswordInput = document.getElementById('sslcommerz_store_password');
+                const modeSelect = document.getElementById('sslcommerz_mode');
+
+                if (storeIdInput) {
+                    storeIdInput.value = 'testbox';
+                }
+
+                if (storePasswordInput) {
+                    storePasswordInput.value = 'qwerty';
+                }
+
+                if (modeSelect) {
+                    modeSelect.value = 'sandbox';
+                }
+            });
+        });
+    </script>
 </body>
 
 </html>

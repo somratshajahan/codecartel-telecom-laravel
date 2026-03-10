@@ -1,15 +1,20 @@
 <?php
 
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use App\Models\ApiDomain;
+use App\Models\Branding;
+use App\Models\DepositSetting;
 use App\Models\HomepageSetting;
 use App\Models\ManualPaymentRequest;
 use App\Models\RechargeBlockList;
+use App\Models\SslCommerzTransaction;
+use App\Models\User;
 use App\Http\Controllers\Admin\DeviceLogController;
 use App\Http\Controllers\HomepageController;
 use App\Http\Controllers\AuthPageController;
@@ -22,10 +27,259 @@ use App\Http\Controllers\Admin\NoticeController;
 use App\Services\GoogleOtpService;
 use App\Services\FirebasePushNotificationService;
 use App\Services\SecurityRuntimeService;
+use App\Services\SslCommerzService;
 
 
 $normalizeFlexiOperatorName = static function (?string $value): string {
     return strtolower(preg_replace('/[^a-z]/i', '', (string) $value));
+};
+
+$resolveSslCommerzTransaction = static function (Request $request): ?SslCommerzTransaction {
+    $tranId = trim((string) ($request->input('tran_id') ?: $request->input('transaction_id')));
+
+    if ($tranId === '' || ! Schema::hasTable('sslcommerz_transactions')) {
+        return null;
+    }
+
+    return SslCommerzTransaction::query()
+        ->with('user')
+        ->where('tran_id', $tranId)
+        ->first();
+};
+
+$sslCommerzRedirectResponse = static function (?SslCommerzTransaction $transaction, string $flashKey, string $message) {
+    $user = Auth::user();
+
+    if (
+        $user
+        && $transaction
+        && (int) $user->getAuthIdentifier() === (int) $transaction->user_id
+        && $user->hasPermission('add_balance')
+    ) {
+        return redirect()->route('user.add.balance')->with($flashKey, $message);
+    }
+
+    return redirect()
+        ->route('user.add.balance.sslcommerz.status', array_filter([
+            'tranId' => $transaction?->tran_id,
+        ]))
+        ->with($flashKey, $message);
+};
+
+$resolveManualPaymentMethods = static function (?Branding $branding) {
+    return collect([
+        ['key' => 'bkash', 'name' => 'Bkash', 'number' => optional($branding)->bkash, 'color' => 'bg-pink-500', 'route_name' => 'user.bkash'],
+        ['key' => 'rocket', 'name' => 'Rocket', 'number' => optional($branding)->rocket, 'color' => 'bg-violet-600', 'route_name' => 'user.rocket'],
+        ['key' => 'nagad', 'name' => 'Nagad', 'number' => optional($branding)->nagad, 'color' => 'bg-orange-500', 'route_name' => 'user.nagad'],
+        ['key' => 'upay', 'name' => 'Upay', 'number' => optional($branding)->upay, 'color' => 'bg-emerald-600', 'route_name' => 'user.upay'],
+    ]);
+};
+
+$resolveManualPaymentRedirectRoute = static function (?string $routeName): string {
+    return in_array($routeName, ['user.add.balance', 'user.bkash', 'user.nagad', 'user.rocket', 'user.upay'], true)
+        ? $routeName
+        : 'user.add.balance';
+};
+
+$renderUserAddBalancePage = static function (?string $selectedManualMethodKey = null) use ($resolveManualPaymentMethods) {
+    $settings = HomepageSetting::first();
+    $branding = Branding::first();
+    $user = Auth::user();
+    $allManualMethods = $resolveManualPaymentMethods($branding);
+    $manualMethods = $allManualMethods
+        ->filter(fn(array $method) => filled($method['number']))
+        ->values();
+    $selectedManualMethod = filled($selectedManualMethodKey)
+        ? $allManualMethods->firstWhere('key', strtolower(trim((string) $selectedManualMethodKey)))
+        : null;
+
+    $recentRequests = collect();
+    $recentSslCommerzTransactions = collect();
+
+    if (Schema::hasTable('manual_payment_requests') && filled($user?->getAuthIdentifier())) {
+        $recentRequests = ManualPaymentRequest::query()
+            ->where('user_id', $user->getAuthIdentifier())
+            ->when(
+                filled(data_get($selectedManualMethod, 'name')),
+                fn($query) => $query->where('method', data_get($selectedManualMethod, 'name'))
+            )
+            ->latest()
+            ->limit(10)
+            ->get()
+            ->map(function (ManualPaymentRequest $request) use ($user) {
+                $amount = round((float) $request->amount, 2);
+                $bonusPercent = DepositSetting::bonusPercent($user?->level, $request->method);
+
+                $request->cost = round($amount + (($amount * $bonusPercent) / 100), 2);
+
+                return $request;
+            });
+    }
+
+    if (Schema::hasTable('sslcommerz_transactions') && filled($user?->getAuthIdentifier())) {
+        $recentSslCommerzTransactions = SslCommerzTransaction::query()
+            ->where('user_id', $user->getAuthIdentifier())
+            ->latest()
+            ->limit(10)
+            ->get();
+    }
+
+    return view('user-add-balance', compact(
+        'settings',
+        'branding',
+        'user',
+        'manualMethods',
+        'recentRequests',
+        'recentSslCommerzTransactions',
+        'selectedManualMethod'
+    ));
+};
+
+$settleSslCommerzTransaction = static function (SslCommerzTransaction $transaction, array $callbackPayload = []): array {
+    if ($transaction->credited_at !== null) {
+        if (! empty($callbackPayload)) {
+            $transaction->update([
+                'callback_payload' => array_merge($transaction->callback_payload ?? [], $callbackPayload),
+            ]);
+        }
+
+        return [
+            'ok' => true,
+            'credited' => false,
+            'message' => 'SSLCommerz payment already processed.',
+            'transaction' => $transaction->fresh(['user']),
+        ];
+    }
+
+    $branding = Branding::first();
+    $sslCommerzService = app(SslCommerzService::class);
+
+    if (! $branding || ! $sslCommerzService->isConfigured($branding)) {
+        return [
+            'ok' => false,
+            'credited' => false,
+            'message' => 'SSLCommerz is not configured right now.',
+            'transaction' => $transaction,
+        ];
+    }
+
+    $validation = $sslCommerzService->validateTransaction($branding, [
+        'val_id' => $callbackPayload['val_id'] ?? null,
+        'tran_id' => $transaction->tran_id,
+        'amount' => $transaction->amount,
+        'currency' => $transaction->currency ?: 'BDT',
+    ]);
+
+    $gatewayData = $validation['data'] ?? [];
+    $validatedAmount = round((float) ($gatewayData['amount'] ?? $gatewayData['store_amount'] ?? $transaction->amount), 2);
+    $expectedAmount = round((float) $transaction->amount, 2);
+
+    if (! $validation['ok']) {
+        $transaction->update([
+            'status' => 'failed',
+            'gateway_status' => strtolower(trim((string) ($gatewayData['status'] ?? 'validation_failed'))),
+            'validation_payload' => $gatewayData,
+            'callback_payload' => array_merge($transaction->callback_payload ?? [], $callbackPayload),
+            'failure_reason' => $validation['message'] ?? 'SSLCommerz validation failed.',
+        ]);
+
+        return [
+            'ok' => false,
+            'credited' => false,
+            'message' => $validation['message'] ?? 'SSLCommerz validation failed.',
+            'transaction' => $transaction->fresh(['user']),
+        ];
+    }
+
+    if (abs($validatedAmount - $expectedAmount) > 0.01) {
+        $transaction->update([
+            'status' => 'failed',
+            'gateway_status' => strtolower(trim((string) ($gatewayData['status'] ?? 'amount_mismatch'))),
+            'validated_amount' => $validatedAmount,
+            'validation_payload' => $gatewayData,
+            'callback_payload' => array_merge($transaction->callback_payload ?? [], $callbackPayload),
+            'failure_reason' => 'Validated amount does not match the requested amount.',
+        ]);
+
+        return [
+            'ok' => false,
+            'credited' => false,
+            'message' => 'Validated amount does not match the requested amount.',
+            'transaction' => $transaction->fresh(['user']),
+        ];
+    }
+
+    $credited = false;
+
+    DB::transaction(function () use (&$credited, $transaction, $callbackPayload, $gatewayData, $validatedAmount, $expectedAmount) {
+        $lockedTransaction = SslCommerzTransaction::query()->lockForUpdate()->findOrFail($transaction->id);
+        $mergedCallbackPayload = array_merge($lockedTransaction->callback_payload ?? [], $callbackPayload);
+
+        if ($lockedTransaction->credited_at !== null) {
+            $lockedTransaction->update([
+                'callback_payload' => $mergedCallbackPayload,
+            ]);
+
+            return;
+        }
+
+        $lockedTransaction->update([
+            'status' => 'approved',
+            'gateway_status' => strtolower(trim((string) ($gatewayData['status'] ?? 'validated'))),
+            'validated_amount' => $validatedAmount,
+            'bank_tran_id' => trim((string) ($gatewayData['bank_tran_id'] ?? '')) ?: null,
+            'card_type' => trim((string) ($gatewayData['card_type'] ?? '')) ?: null,
+            'store_amount' => round((float) ($gatewayData['store_amount'] ?? $expectedAmount), 2),
+            'validation_id' => trim((string) ($gatewayData['val_id'] ?? '')) ?: null,
+            'validation_payload' => $gatewayData,
+            'callback_payload' => $mergedCallbackPayload,
+            'failure_reason' => null,
+            'validated_at' => now(),
+            'credited_at' => now(),
+        ]);
+
+        $user = User::query()->lockForUpdate()->findOrFail($lockedTransaction->user_id);
+        $user->main_bal = round((float) $user->main_bal + $expectedAmount, 2);
+        $user->save();
+
+        if (Schema::hasTable('balance_add_history')) {
+            $payload = [
+                'user_id' => $user->id,
+                'amount' => $expectedAmount,
+                'type' => 'sslcommerz',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+
+            if (Schema::hasColumn('balance_add_history', 'description')) {
+                $payload['description'] = 'SSLCommerz payment approved. TxID: ' . $lockedTransaction->tran_id;
+            }
+
+            DB::table('balance_add_history')->insert($payload);
+        }
+
+        $credited = true;
+    });
+
+    $freshTransaction = SslCommerzTransaction::query()->with('user')->find($transaction->id);
+
+    if ($credited && $freshTransaction?->user) {
+        app(FirebasePushNotificationService::class)->sendToUser(
+            $freshTransaction->user,
+            'Balance Added via SSLCommerz',
+            'Your SSLCommerz payment of ' . number_format($expectedAmount, 2) . ' Tk was verified and added to your main balance.',
+            route('dashboard'),
+        );
+    }
+
+    return [
+        'ok' => true,
+        'credited' => $credited,
+        'message' => $credited
+            ? 'SSLCommerz payment verified and balance added successfully.'
+            : 'SSLCommerz payment already processed.',
+        'transaction' => $freshTransaction,
+    ];
 };
 
 $flexiOperatorPrefixes = [
@@ -136,6 +390,8 @@ Route::prefix('admin')->name('admin.')->group(function () {
 });
 
 Route::prefix('admin')->name('admin.')->middleware(['auth', 'admin', 'prevent.back'])->group(function () {
+    Route::get('/deposit', [BrandingController::class, 'deposit'])->name('deposit');
+    Route::post('/deposit', [BrandingController::class, 'updateDeposit'])->name('deposit.update');
     Route::get('/payment-gateway', [BrandingController::class, 'paymentGateway'])->name('payment.gateway');
     Route::post('/payment-gateway/update', [BrandingController::class, 'updatePaymentGateway'])->name('payment.gateway.update');
 });
@@ -485,6 +741,10 @@ Route::post('/admin/security-modual', [AdminController::class, 'updateSecurityMo
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.security.modual.update');
 
+Route::get('/admin/balance-report', [AdminController::class, 'balanceReport'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.balance.report');
+
 Route::get('/admin/daily-reports', [AdminController::class, 'dailyReports'])
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.daily.reports');
@@ -558,6 +818,20 @@ Route::get('/admin/google-otp-config', [HomepageController::class, 'googleOtpCon
 Route::post('/admin/google-otp-config', [HomepageController::class, 'updateGoogleOtpConfig'])
     ->middleware(['auth', 'admin', 'prevent.back'])
     ->name('admin.google.otp.update');
+
+Route::get('/admin/recaptcha-config', [HomepageController::class, 'recaptchaConfig'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.recaptcha.config');
+Route::post('/admin/recaptcha-config', [HomepageController::class, 'updateRecaptchaConfig'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.recaptcha.update');
+
+Route::get('/admin/tawk-chat-config', [HomepageController::class, 'tawkChatConfig'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.tawk.config');
+Route::post('/admin/tawk-chat-config', [HomepageController::class, 'updateTawkChatConfig'])
+    ->middleware(['auth', 'admin', 'prevent.back'])
+    ->name('admin.tawk.update');
 
 Route::get('/notifications/firebase/bootstrap', [HomepageController::class, 'firebaseBootstrap'])
     ->name('notifications.firebase.bootstrap');
@@ -736,55 +1010,75 @@ Route::get('/dashboard', function () {
     ]);
 })->middleware(['auth', 'prevent.back'])->name('dashboard');
 
-Route::get('/add-balance', function () {
-    $settings = \App\Models\HomepageSetting::first();
-    $branding = \App\Models\Branding::first();
-    $user = Auth::user();
-
-    $manualMethods = collect([
-        ['name' => 'Bkash', 'number' => optional($branding)->bkash, 'color' => 'bg-pink-500'],
-        ['name' => 'Rocket', 'number' => optional($branding)->rocket, 'color' => 'bg-violet-600'],
-        ['name' => 'Nagad', 'number' => optional($branding)->nagad, 'color' => 'bg-orange-500'],
-        ['name' => 'Upay', 'number' => optional($branding)->upay, 'color' => 'bg-emerald-600'],
-    ])->filter(fn(array $method) => filled($method['number']))->values();
-
-    $recentRequests = collect();
-
-    if (\Illuminate\Support\Facades\Schema::hasTable('manual_payment_requests') && filled($user?->getAuthIdentifier())) {
-        $recentRequests = ManualPaymentRequest::query()
-            ->where('user_id', $user->getAuthIdentifier())
-            ->latest()
-            ->limit(10)
-            ->get();
-    }
-
-    return view('user-add-balance', compact('settings', 'branding', 'user', 'manualMethods', 'recentRequests'));
+Route::get('/add-balance', function () use ($renderUserAddBalancePage) {
+    return $renderUserAddBalancePage();
 })->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.add.balance');
 
-Route::post('/add-balance', function (Request $request) {
+Route::get('/bkash', function () use ($renderUserAddBalancePage) {
+    return $renderUserAddBalancePage('bkash');
+})->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.bkash');
+
+Route::get('/nagad', function () use ($renderUserAddBalancePage) {
+    return $renderUserAddBalancePage('nagad');
+})->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.nagad');
+
+Route::get('/rocket', function () use ($renderUserAddBalancePage) {
+    return $renderUserAddBalancePage('rocket');
+})->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.rocket');
+
+Route::get('/upay', function () use ($renderUserAddBalancePage) {
+    return $renderUserAddBalancePage('upay');
+})->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.upay');
+
+Route::post('/add-balance', function (Request $request) use ($resolveManualPaymentMethods, $resolveManualPaymentRedirectRoute) {
+    $redirectRoute = $resolveManualPaymentRedirectRoute($request->input('redirect_route'));
+
     if (! \Illuminate\Support\Facades\Schema::hasTable('manual_payment_requests')) {
-        return redirect()->route('user.add.balance')->with('error', 'Manual payment request system is not ready yet.');
+        return redirect()->route($redirectRoute)->with('error', 'Manual payment request system is not ready yet.');
     }
 
-    $branding = \App\Models\Branding::first();
-    $availableMethods = collect([
-        'Bkash' => optional($branding)->bkash,
-        'Rocket' => optional($branding)->rocket,
-        'Nagad' => optional($branding)->nagad,
-        'Upay' => optional($branding)->upay,
-    ])->filter(fn($number) => filled($number))->keys()->values()->all();
+    $branding = Branding::first();
+    $availableMethods = $resolveManualPaymentMethods($branding)
+        ->filter(fn(array $method) => filled($method['number']))
+        ->pluck('name')
+        ->values()
+        ->all();
+
+    $dedicatedRouteMethod = match ($redirectRoute) {
+        'user.bkash' => 'Bkash',
+        'user.nagad' => 'Nagad',
+        'user.rocket' => 'Rocket',
+        'user.upay' => 'Upay',
+        default => null,
+    };
+
+    if (filled($dedicatedRouteMethod) && ! in_array($dedicatedRouteMethod, $availableMethods, true)) {
+        $availableMethods[] = $dedicatedRouteMethod;
+    }
 
     if (empty($availableMethods)) {
-        return redirect()->route('user.add.balance')->with('error', 'No manual payment method is available right now.');
+        return redirect()->route($redirectRoute)->with('error', 'No manual payment method is available right now.');
     }
+
+    $typeOptions = ['Cash IN', 'cash out', 'send money'];
 
     $validated = $request->validate([
         'method' => ['required', \Illuminate\Validation\Rule::in($availableMethods)],
         'sender_number' => ['required', 'regex:/^01[0-9]{9}$/'],
-        'transaction_id' => ['required', 'string', 'max:255', 'unique:manual_payment_requests,transaction_id'],
-        'amount' => ['required', 'numeric', 'min:1'],
-        'note' => ['nullable', 'string', 'max:1000'],
+        'amount' => ['required', 'numeric', 'min:500', 'max:25000'],
+        'type' => ['required', \Illuminate\Validation\Rule::in($typeOptions)],
+        'pin' => ['required', 'digits:4'],
     ]);
+
+    $user = Auth::user();
+
+    if (! $user || ! Hash::check((string) $validated['pin'], (string) $user->pin)) {
+        return redirect()
+            ->route($redirectRoute)
+            ->withInput($request->except('pin'))
+            ->withErrors(['pin' => 'Invalid PIN'])
+            ->with('error', 'Invalid PIN');
+    }
 
     $securityRuntime = app(SecurityRuntimeService::class);
 
@@ -792,24 +1086,221 @@ Route::post('/add-balance', function (Request $request) {
         $message = $securityRuntime->requestIntervalMessage();
 
         return redirect()
-            ->route('user.add.balance')
-            ->withInput()
+            ->route($redirectRoute)
+            ->withInput($request->except('pin'))
             ->withErrors(['request' => $message])
             ->with('error', $message);
     }
+
+    do {
+        $generatedTransactionId = 'MB-' . Str::upper(Str::random(10));
+    } while (ManualPaymentRequest::query()->where('transaction_id', $generatedTransactionId)->exists());
 
     ManualPaymentRequest::create([
         'user_id' => auth()->id(),
         'method' => trim((string) $validated['method']),
         'sender_number' => trim((string) $validated['sender_number']),
-        'transaction_id' => trim((string) $validated['transaction_id']),
+        'transaction_id' => $generatedTransactionId,
         'amount' => $validated['amount'],
-        'note' => filled($validated['note'] ?? null) ? trim((string) $validated['note']) : null,
+        'note' => trim((string) $validated['type']),
         'status' => 'pending',
     ]);
 
-    return redirect()->route('user.add.balance')->with('success', 'Manual payment request submitted successfully. Please wait for admin approval.');
+    return redirect()->route($redirectRoute)->with('success', 'Manual payment request submitted successfully. Please wait for admin approval.');
 })->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.add.balance.submit');
+
+Route::post('/add-balance/sslcommerz/start', function (Request $request) {
+    if (! Schema::hasTable('sslcommerz_transactions')) {
+        return redirect()->route('user.add.balance')->with('error', 'SSLCommerz transaction table is missing. Please run php artisan migrate first.');
+    }
+
+    $branding = Branding::first();
+    $sslCommerzService = app(SslCommerzService::class);
+
+    if (! $branding || ! $sslCommerzService->isConfigured($branding)) {
+        return redirect()->route('user.add.balance')->with('error', 'SSLCommerz is not configured right now.');
+    }
+
+    $validated = $request->validate([
+        'sslcommerz_amount' => ['required', 'numeric', 'min:1'],
+    ]);
+
+    $securityRuntime = app(SecurityRuntimeService::class);
+
+    if ($securityRuntime->hasRecentRequest('sslcommerz_transactions', (int) auth()->id())) {
+        $message = $securityRuntime->requestIntervalMessage();
+
+        return redirect()
+            ->route('user.add.balance')
+            ->withInput()
+            ->withErrors(['sslcommerz_amount' => $message])
+            ->with('error', $message);
+    }
+
+    $user = auth()->user();
+    $settings = HomepageSetting::first();
+    $amount = round((float) $validated['sslcommerz_amount'], 2);
+    $transaction = SslCommerzTransaction::create([
+        'user_id' => $user->id,
+        'tran_id' => 'SSL-' . strtoupper(Str::random(12)),
+        'amount' => $amount,
+        'currency' => 'BDT',
+        'status' => 'initiated',
+        'request_payload' => [
+            'requested_amount' => $amount,
+            'requested_by' => $user->id,
+        ],
+    ]);
+
+    $customerEmail = filter_var((string) $user->email, FILTER_VALIDATE_EMAIL)
+        ? (string) $user->email
+        : 'customer@example.com';
+    $customerPhone = preg_match('/^01[0-9]{9}$/', (string) $user->mobile)
+        ? (string) $user->mobile
+        : '01700000000';
+    $customerName = trim((string) $user->name) !== '' ? trim((string) $user->name) : ('Customer ' . $user->id);
+    $customerAddress = optional($settings)->company_name ?: (optional($branding)->brand_name ?: 'Bangladesh');
+
+    $sessionPayload = [
+        'total_amount' => number_format($amount, 2, '.', ''),
+        'currency' => 'BDT',
+        'tran_id' => $transaction->tran_id,
+        'success_url' => route('user.add.balance.sslcommerz.success'),
+        'fail_url' => route('user.add.balance.sslcommerz.fail'),
+        'cancel_url' => route('user.add.balance.sslcommerz.cancel'),
+        'ipn_url' => route('user.add.balance.sslcommerz.ipn'),
+        'shipping_method' => 'NO',
+        'product_name' => 'Add Balance',
+        'product_category' => 'Deposit',
+        'product_profile' => 'general',
+        'cus_name' => $customerName,
+        'cus_email' => $customerEmail,
+        'cus_add1' => $customerAddress,
+        'cus_city' => 'Dhaka',
+        'cus_state' => 'Dhaka',
+        'cus_postcode' => '1207',
+        'cus_country' => 'Bangladesh',
+        'cus_phone' => $customerPhone,
+        'value_a' => (string) $user->id,
+        'value_b' => $transaction->tran_id,
+    ];
+
+    $response = $sslCommerzService->initiateSession($branding, $sessionPayload);
+    $responseData = $response['data'] ?? [];
+
+    $transaction->update([
+        'status' => $response['ok'] ? 'pending' : 'failed',
+        'gateway_status' => strtolower(trim((string) ($responseData['status'] ?? ($response['ok'] ? 'success' : 'failed')))),
+        'session_key' => trim((string) ($responseData['sessionkey'] ?? $responseData['session_key'] ?? '')) ?: null,
+        'gateway_url' => trim((string) ($responseData['GatewayPageURL'] ?? $responseData['redirectGatewayURL'] ?? '')) ?: null,
+        'request_payload' => $sessionPayload,
+        'init_response_payload' => $responseData,
+        'failure_reason' => $response['ok'] ? null : ($response['message'] ?? 'SSLCommerz session creation failed.'),
+    ]);
+
+    if (! $response['ok'] || blank($transaction->gateway_url)) {
+        return redirect()->route('user.add.balance')->with('error', $response['message'] ?? 'Unable to initiate SSLCommerz payment right now.');
+    }
+
+    return redirect()->away($transaction->gateway_url);
+})->middleware(['auth', 'prevent.back', 'permission:add_balance'])->name('user.add.balance.sslcommerz.start');
+
+Route::get('/add-balance/sslcommerz/status/{tranId?}', function (?string $tranId = null) {
+    $settings = HomepageSetting::first();
+    $transaction = null;
+
+    if (Schema::hasTable('sslcommerz_transactions') && filled($tranId)) {
+        $transaction = SslCommerzTransaction::query()
+            ->where('tran_id', trim($tranId))
+            ->first();
+    }
+
+    $status = strtolower(trim((string) ($transaction->status ?? 'unknown')));
+    $statusLabel = match ($status) {
+        'approved' => 'Success',
+        'failed' => 'Failed',
+        'cancelled' => 'Cancelled',
+        default => 'Status Update',
+    };
+
+    $message = session('success')
+        ?? session('error')
+        ?? session('warning')
+        ?? match ($status) {
+            'approved' => 'SSLCommerz payment verified and balance added successfully.',
+            'failed' => ($transaction->failure_reason ?: 'SSLCommerz payment failed. Please try again.'),
+            'cancelled' => ($transaction->failure_reason ?: 'SSLCommerz payment was cancelled.'),
+            default => 'We received your SSLCommerz payment response. Please log in to review the latest status.',
+        };
+
+    return view('sslcommerz-status', compact('settings', 'transaction', 'status', 'statusLabel', 'message'));
+})->name('user.add.balance.sslcommerz.status');
+
+Route::match(['GET', 'POST'], '/add-balance/sslcommerz/success', function (Request $request) use ($resolveSslCommerzTransaction, $settleSslCommerzTransaction, $sslCommerzRedirectResponse) {
+    $transaction = $resolveSslCommerzTransaction($request);
+
+    if (! $transaction) {
+        return $sslCommerzRedirectResponse(null, 'error', 'Unable to locate the SSLCommerz transaction.');
+    }
+
+    $result = $settleSslCommerzTransaction($transaction, $request->all());
+
+    return $sslCommerzRedirectResponse(
+        $result['transaction'] ?? $transaction,
+        $result['ok'] ? 'success' : 'error',
+        $result['message'] ?? 'Unable to process SSLCommerz payment.',
+    );
+})->name('user.add.balance.sslcommerz.success');
+
+Route::match(['GET', 'POST'], '/add-balance/sslcommerz/fail', function (Request $request) use ($resolveSslCommerzTransaction, $sslCommerzRedirectResponse) {
+    $transaction = $resolveSslCommerzTransaction($request);
+
+    if (! $transaction) {
+        return $sslCommerzRedirectResponse(null, 'error', 'SSLCommerz payment failed, but the transaction could not be found.');
+    }
+
+    if ($transaction->credited_at === null) {
+        $transaction->update([
+            'status' => 'failed',
+            'gateway_status' => strtolower(trim((string) ($request->input('status') ?: 'failed'))),
+            'callback_payload' => array_merge($transaction->callback_payload ?? [], $request->all()),
+            'failure_reason' => trim((string) ($request->input('failedreason') ?: 'SSLCommerz payment failed.')),
+        ]);
+    }
+
+    return $sslCommerzRedirectResponse($transaction->fresh(['user']), 'error', 'SSLCommerz payment failed. Please try again.');
+})->name('user.add.balance.sslcommerz.fail');
+
+Route::match(['GET', 'POST'], '/add-balance/sslcommerz/cancel', function (Request $request) use ($resolveSslCommerzTransaction, $sslCommerzRedirectResponse) {
+    $transaction = $resolveSslCommerzTransaction($request);
+
+    if (! $transaction) {
+        return $sslCommerzRedirectResponse(null, 'error', 'SSLCommerz payment was cancelled.');
+    }
+
+    if ($transaction->credited_at === null) {
+        $transaction->update([
+            'status' => 'cancelled',
+            'gateway_status' => strtolower(trim((string) ($request->input('status') ?: 'cancelled'))),
+            'callback_payload' => array_merge($transaction->callback_payload ?? [], $request->all()),
+            'failure_reason' => trim((string) ($request->input('failedreason') ?: 'SSLCommerz payment was cancelled by the user.')),
+        ]);
+    }
+
+    return $sslCommerzRedirectResponse($transaction->fresh(['user']), 'error', 'SSLCommerz payment was cancelled.');
+})->name('user.add.balance.sslcommerz.cancel');
+
+Route::match(['GET', 'POST'], '/add-balance/sslcommerz/ipn', function (Request $request) use ($resolveSslCommerzTransaction, $settleSslCommerzTransaction) {
+    $transaction = $resolveSslCommerzTransaction($request);
+
+    if (! $transaction) {
+        return response('Transaction not found.', 404);
+    }
+
+    $result = $settleSslCommerzTransaction($transaction, $request->all());
+
+    return response($result['ok'] ? 'OK' : ($result['message'] ?? 'Validation failed.'), $result['ok'] ? 200 : 422);
+})->name('user.add.balance.sslcommerz.ipn');
 
 Route::get('/flexiload', function (Request $request) use ($normalizeFlexiOperatorName, $flexiOperatorPrefixes, $resolveFlexiOperatorFromMobile) {
     $settings = \App\Models\HomepageSetting::first();
@@ -1098,8 +1589,7 @@ Route::get('/drive-offers/{operator}/confirm/{package}', function ($operator, $p
     $package = \App\Models\DrivePackage::findOrFail($package);
     $mobile = request('mobile');
     $pin = request('pin');
-    $branding = \App\Models\Branding::query()->first();
-    $selectedBalanceType = (($branding->drive_balance ?? 'on') === 'off') ? 'main_bal' : 'drive_bal';
+    $selectedBalanceType = app(SecurityRuntimeService::class)->driveBalanceType();
     $selectedBalanceLabel = $selectedBalanceType === 'main_bal' ? 'main balance' : 'drive balance';
     $availableBalance = (float) (auth()->user()?->{$selectedBalanceType} ?? 0);
 
@@ -1402,8 +1892,7 @@ Route::post('/drive-offers/{operator}/buy/{package}', function (Request $request
     $amount = $packageData->price - $packageData->commission;
 
     $user = auth()->user();
-    $branding = \App\Models\Branding::query()->first();
-    $balanceType = (($branding->drive_balance ?? 'on') === 'off') ? 'main_bal' : 'drive_bal';
+    $balanceType = $securityRuntime->driveBalanceType();
     $balanceLabel = $balanceType === 'main_bal' ? 'main balance' : 'drive balance';
 
     if (! $securityRuntime->isOperatorAllowed($operator)) {
@@ -1505,8 +1994,15 @@ Route::get('/my-drive-history', function () {
 
 Route::get('/my-history', function (Request $request) {
     $settings = \App\Models\HomepageSetting::first();
+    $user = Auth::user();
     $dateFrom = $request->query('date_from');
     $dateTo = $request->query('date_to');
+    $manualHistoryTypes = ['bkash', 'nagad', 'rocket', 'upay'];
+    $supportedHistoryTypes = ['all', 'flexi', 'internet', ...$manualHistoryTypes];
+    $requestedHistoryType = strtolower(trim((string) $request->query('type', '')));
+    $historyType = in_array($requestedHistoryType, $supportedHistoryTypes, true)
+        ? $requestedHistoryType
+        : 'all';
     $todayDate = now()->toDateString();
 
     if (empty($dateFrom) && empty($dateTo)) {
@@ -1589,13 +2085,51 @@ Route::get('/my-history', function (Request $request) {
         })
         : collect();
 
-    $history = $driveHistory
-        ->concat($internetHistory)
-        ->concat($flexiHistory)
+    $manualBalanceHistory = Schema::hasTable('balance_add_history')
+        ? DB::table('balance_add_history')
+        ->where('user_id', auth()->id())
+        ->whereIn('type', $manualHistoryTypes)
+        ->whereBetween('created_at', [$startDate, $endDate])
+        ->orderBy('created_at', 'desc')
+        ->get()
+        ->map(function ($item) {
+            $type = strtolower(trim((string) ($item->type ?? '')));
+            $label = match ($type) {
+                'bkash' => 'Bkash',
+                'nagad' => 'Nagad',
+                'rocket' => 'Rocket',
+                'upay' => 'Upay',
+                default => 'Balance Add',
+            };
+
+            return (object) [
+                'type' => $type,
+                'operator' => $label,
+                'mobile' => '-',
+                'amount' => $item->amount,
+                'status' => 'success',
+                'description' => filled($item->description ?? null) ? $item->description : ($label . ' Balance Add'),
+                'created_at' => $item->created_at,
+            ];
+        })
+        : collect();
+
+    $history = (match ($historyType) {
+        'flexi' => $flexiHistory,
+        'internet' => $internetHistory,
+        'bkash' => $manualBalanceHistory->where('type', 'bkash'),
+        'nagad' => $manualBalanceHistory->where('type', 'nagad'),
+        'rocket' => $manualBalanceHistory->where('type', 'rocket'),
+        'upay' => $manualBalanceHistory->where('type', 'upay'),
+        default => $driveHistory
+            ->concat($internetHistory)
+            ->concat($flexiHistory)
+            ->concat($manualBalanceHistory),
+    })
         ->sortByDesc('created_at')
         ->values();
 
-    return view('user-all-history', compact('settings', 'history', 'dateFrom', 'dateTo'));
+    return view('user-all-history', compact('settings', 'user', 'history', 'dateFrom', 'dateTo', 'historyType'));
 })->middleware(['auth', 'prevent.back', 'permission:all_history'])->name('user.all.history');
 
 Route::get('/my-pending-requests', function () {
@@ -1639,11 +2173,11 @@ Route::get('/my-pending-requests', function () {
             ->where('status', 'pending')
             ->get()
             ->map(function ($item) {
-                $item->request_type = 'Balance Add';
+                $item->request_type = 'mobile banking';
                 $item->request_category = 'manual_payment';
                 $item->operator = $item->method;
                 $item->mobile = $item->sender_number;
-                $item->type = $item->transaction_id;
+                $item->type = $item->note ?: $item->transaction_id;
                 return $item;
             });
     }

@@ -18,6 +18,12 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\SecuritySessionTimeout::class,
             \App\Http\Middleware\SecurityCredentialExpiry::class,
         ]);
+        $middleware->validateCsrfTokens([
+            'add-balance/sslcommerz/success',
+            'add-balance/sslcommerz/fail',
+            'add-balance/sslcommerz/cancel',
+            'add-balance/sslcommerz/ipn',
+        ]);
 
         $middleware->redirectGuestsTo(function (Request $request) {
             if ($request->is('admin') || $request->is('admin/*')) {

@@ -1,22 +1,30 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Firebase Credentials - {{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</title>
     @if(optional($settings)->favicon_path)
-        <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
+    <link rel="icon" type="image/x-icon" href="{{ asset(optional($settings)->favicon_path) }}">
     @endif
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
 </head>
+
 <body class="min-h-screen bg-base-200">
     <div class="drawer lg:drawer-open">
         <input id="my-drawer" type="checkbox" class="drawer-toggle" />
         <div class="drawer-content flex flex-col">
             <div class="navbar bg-base-100 shadow-md sticky top-0 z-30">
-                <div class="flex-none"><label for="my-drawer" class="btn btn-square btn-ghost"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg></label></div>
+                <div class="flex-none"><label for="my-drawer" class="btn btn-square btn-ghost"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                        </svg></label></div>
                 <div class="flex-1"><a href="{{ route('admin.dashboard') }}" class="text-xl font-bold px-2 hover:text-primary transition-colors">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }} - Firebase</a></div>
             </div>
             <div class="p-6">
@@ -29,11 +37,13 @@
                                     <p class="text-sm opacity-70">Admin/user push notification চালু করার জন্য Firebase Web config + Service Account JSON save করুন।</p>
                                 </div>
                                 @if(session('success'))
-                                    <div class="badge badge-success badge-lg">{{ session('success') }}</div>
+                                <div class="badge badge-success badge-lg">{{ session('success') }}</div>
                                 @endif
                             </div>
                             @if($errors->any())
-                                <div class="alert alert-error"><ul class="list-disc pl-5 text-sm">@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>
+                            <div class="alert alert-error">
+                                <ul class="list-disc pl-5 text-sm">@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul>
+                            </div>
                             @endif
                             <form method="POST" action="{{ route('admin.firebase.update') }}" class="space-y-6">
                                 @csrf
@@ -67,11 +77,27 @@
                 <div class="p-4 border-b border-base-200"><a href="{{ route('admin.dashboard') }}" class="flex items-center gap-2"><span class="text-lg font-bold sidebar-text">{{ optional($settings)->company_name ?? 'Codecartel' }}</span></a></div>
                 <ul class="menu p-4 gap-1">
                     <li><a href="{{ route('admin.dashboard') }}">Dashboard</a></li>
-                    <li><details open><summary><span class="sidebar-text">Settings</span></summary><ul><li><a href="{{ route('admin.homepage.edit') }}">General Settings</a></li><li><a href="{{ route('admin.mail.config') }}">Mail Configuration</a></li><li><a href="{{ route('admin.sms.config') }}">Mobile OTP Configuration</a></li><li><a href="{{ route('admin.firebase.config') }}" class="active">Firebase Credentials</a></li><li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li></ul></details></li>
-                    <li><form method="POST" action="{{ route('logout') }}">@csrf <button type="submit" class="flex items-center gap-3 w-full px-4 py-2 rounded-lg hover:bg-base-200 text-left">Logout</button></form></li>
+                    <li>
+                        <details open>
+                            <summary><span class="sidebar-text">Settings</span></summary>
+                            <ul>
+                                <li><a href="{{ route('admin.homepage.edit') }}">General Settings</a></li>
+                                <li><a href="{{ route('admin.mail.config') }}">Mail Configuration</a></li>
+                                <li><a href="{{ route('admin.sms.config') }}">Mobile OTP Configuration</a></li>
+                                <li><a href="{{ route('admin.firebase.config') }}" class="active">Firebase Credentials</a></li>
+                                <li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li>
+                                <li><a href="{{ route('admin.recaptcha.config') }}">reCAPTCHA Credentials</a></li>
+                                <li><a href="{{ route('admin.tawk.config') }}">Tawk Chat Credentials</a></li>
+                            </ul>
+                        </details>
+                    </li>
+                    <li>
+                        <form method="POST" action="{{ route('logout') }}">@csrf <button type="submit" class="flex items-center gap-3 w-full px-4 py-2 rounded-lg hover:bg-base-200 text-left">Logout</button></form>
+                    </li>
                 </ul>
             </aside>
         </div>
     </div>
 </body>
+
 </html>

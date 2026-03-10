@@ -17,7 +17,7 @@
     </style>
 </head>
 
-<body class="min-h-screen bg-base-200">
+<body class="min-h-screen bg-base-200 text-base-content transition-colors duration-300">
     @php
     $canAddBalance = $user->hasPermission('add_balance');
     $canFlexi = true;
@@ -53,7 +53,8 @@
                 <div class="flex-1">
                     <a href="{{ route('dashboard') }}" class="px-2 text-xl font-bold">{{ optional($settings)->company_name ?? 'Codecartel Telecom' }}</a>
                 </div>
-                <div class="flex-none gap-2">
+                <div class="flex-none flex items-center gap-2">
+                    @include('partials.theme-toggle')
                     <div class="dropdown dropdown-end">
                         <div tabindex="0" role="button" class="btn btn-ghost">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -121,12 +122,19 @@
                                     @foreach($pendingRequests as $req)
                                     @php
                                     $isManualPayment = ($req->request_category ?? '') === 'manual_payment';
+                                    $isFlexiRequest = ($req->request_type ?? '') === 'Flexi';
                                     @endphp
                                     <tr>
                                         <td>{{ $loop->iteration }}</td>
-                                        <td><span class="badge badge-info">{{ $req->request_type ?? 'Drive' }}</span></td>
+                                        <td>
+                                            @if($isFlexiRequest)
+                                            <a href="{{ route('user.all.history', ['type' => 'flexi']) }}" class="badge badge-info hover:badge-secondary transition-colors">{{ $req->request_type }}</a>
+                                            @else
+                                            <span class="badge badge-info">{{ $req->request_type ?? 'Drive' }}</span>
+                                            @endif
+                                        </td>
                                         <td><span class="badge badge-primary">{{ $req->operator }}</span></td>
-                                        <td>{{ (($req->request_type ?? '') === 'Flexi' || $isManualPayment) ? ($req->type ?? 'N/A') : ($req->package->name ?? 'N/A') }}</td>
+                                        <td>{{ ($isFlexiRequest || $isManualPayment) ? ($req->type ?? 'N/A') : ($req->package->name ?? 'N/A') }}</td>
                                         <td>{{ $req->mobile }}</td>
                                         <td>৳{{ number_format($req->amount, 2) }}</td>
                                         <td><span class="badge badge-warning">Pending</span></td>
@@ -186,7 +194,7 @@
                         </div>
                     </a>
                     @endif
-                    <a href="#" class="card bg-info text-info-content shadow-lg hover:bg-info-focus transition-colors">
+                    <a href="{{ route('user.bkash') }}" class="card bg-info text-info-content shadow-lg hover:bg-info-focus transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
@@ -198,7 +206,7 @@
 
                 <!-- Row 2: More Services -->
                 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
-                    <a href="#" class="card bg-success text-success-content shadow-lg hover:bg-success-focus transition-colors">
+                    <a href="{{ route('user.nagad') }}" class="card bg-success text-success-content shadow-lg hover:bg-success-focus transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
@@ -206,7 +214,7 @@
                             <h2 class="card-title">Nagad</h2>
                         </div>
                     </a>
-                    <a href="#" class="card bg-warning text-warning-content shadow-lg hover:bg-warning-focus transition-colors">
+                    <a href="{{ route('user.rocket') }}" class="card bg-warning text-warning-content shadow-lg hover:bg-warning-focus transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
@@ -214,7 +222,7 @@
                             <h2 class="card-title">Rocket</h2>
                         </div>
                     </a>
-                    <a href="#" class="card bg-error text-error-content shadow-lg hover:bg-error-focus transition-colors">
+                    <a href="{{ route('user.upay') }}" class="card bg-error text-error-content shadow-lg hover:bg-error-focus transition-colors">
                         <div class="card-body items-center text-center">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 3a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12m15 0-3-3m0 0-3 3m3-3V6" />
@@ -426,14 +434,14 @@
             <label for="my-drawer" class="drawer-overlay"></label>
             <ul class="menu p-4 w-60 min-h-full bg-base-100 text-base-content">
                 <li>
-                    <a class="active bg-primary text-primary-content" href="{{ route('dashboard') }}">
+                    <a class="{{ isset($showPendingPage) && $showPendingPage ? '' : 'active bg-primary text-primary-content' }}" href="{{ route('dashboard') }}">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                         </svg>
                         Dashboard
                     </a>
                 </li>
-                @if($canFlexi || $canInternet || $canDrive)
+                @if($canAddBalance || $canFlexi || $canInternet || $canDrive)
                 <li>
                     <details>
                         <summary>
@@ -452,10 +460,12 @@
                             @if($canDrive)
                             <li><a href="{{ route('user.drive') }}">Drive</a></li>
                             @endif
-                            <li><a href="#">Bkash</a></li>
-                            <li><a href="#">Nagad</a></li>
-                            <li><a href="#">Rocket</a></li>
-                            <li><a href="#">Upay</a></li>
+                            @if($canAddBalance)
+                            <li><a href="{{ route('user.bkash') }}">Bkash</a></li>
+                            <li><a href="{{ route('user.nagad') }}">Nagad</a></li>
+                            <li><a href="{{ route('user.rocket') }}">Rocket</a></li>
+                            <li><a href="{{ route('user.upay') }}">Upay</a></li>
+                            @endif
                             <li><a href="#">Islami Bank</a></li>
                             <li><a href="{{ route('user.flexi') }}">Bulk Flexi</a></li>
                         </ul>
@@ -464,7 +474,7 @@
                 @endif
                 @if($canPendingRequests)
                 <li>
-                    <a href="{{ route('user.pending.requests') }}" class="flex items-center justify-between">
+                    <a href="{{ route('user.pending.requests') }}" class="flex items-center justify-between {{ isset($showPendingPage) && $showPendingPage ? 'active bg-primary text-primary-content' : '' }}">
                         <div class="flex items-center gap-2">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -491,16 +501,16 @@
                         <ul class="p-2">
                             @if($canAllHistory)
                             <li><a href="{{ route('user.all.history') }}">All history</a></li>
+                            <li><a href="{{ route('user.all.history', ['type' => 'bkash']) }}">Bkash</a></li>
+                            <li><a href="{{ route('user.all.history', ['type' => 'nagad']) }}">Nagad</a></li>
+                            <li><a href="{{ route('user.all.history', ['type' => 'rocket']) }}">Rocket</a></li>
+                            <li><a href="{{ route('user.all.history', ['type' => 'upay']) }}">Upay</a></li>
                             @endif
-                            <li><a href="{{ route('user.flexi') }}">Flexiload</a></li>
+                            <li><a href="{{ route('user.all.history', ['type' => 'flexi']) }}">Flexiload</a></li>
                             <li><a href="#">Internet Pack</a></li>
                             @if($canDriveHistory)
                             <li><a href="{{ route('user.drive.history') }}">Drive</a></li>
                             @endif
-                            <li><a href="#">Bkash</a></li>
-                            <li><a href="#">Nagad</a></li>
-                            <li><a href="#">Rocket</a></li>
-                            <li><a href="#">Upay</a></li>
                             <li><a href="#">Islami Bank</a></li>
                         </ul>
                     </details>

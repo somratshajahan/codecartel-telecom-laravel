@@ -10,6 +10,7 @@ use App\Services\SecurityRuntimeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 
 class AdminAuthController extends Controller
 {
@@ -45,6 +46,14 @@ class AdminAuthController extends Controller
             ])->withInput($request->except(['password', 'pin', 'captcha']));
         }
 
+        $settings = HomepageSetting::first();
+
+        if ($recaptchaError = $this->recaptchaError($request, $settings)) {
+            return back()->withErrors([
+                'g-recaptcha-response' => $recaptchaError,
+            ])->withInput($request->except(['password', 'pin', 'captcha', 'g-recaptcha-response']));
+        }
+
         $remember = $request->boolean('remember');
         $user = User::query()->where('email', $validated['email'])->first();
 
@@ -71,8 +80,6 @@ class AdminAuthController extends Controller
                 'pin' => 'Invalid admin PIN. Please check your 4-digit PIN.',
             ])->withInput($request->except(['password', 'pin']));
         }
-
-        $settings = HomepageSetting::first();
 
         if ($settings?->google_otp_enabled && $user->google_otp_enabled) {
             $request->session()->put(self::OTP_LOGIN_SESSION_KEY, [
@@ -185,5 +192,41 @@ class AdminAuthController extends Controller
         return is_array($pendingLogin) && filled($pendingLogin['user_id'] ?? null)
             ? $pendingLogin
             : null;
+    }
+
+    protected function recaptchaEnabled(?HomepageSetting $settings): bool
+    {
+        return ($settings?->security_recaptcha === 'enable')
+            && filled($settings?->recaptcha_site_key)
+            && filled($settings?->recaptcha_secret_key);
+    }
+
+    protected function recaptchaError(Request $request, ?HomepageSetting $settings): ?string
+    {
+        if (! $this->recaptchaEnabled($settings)) {
+            return null;
+        }
+
+        $token = trim((string) $request->input('g-recaptcha-response', ''));
+
+        if ($token === '') {
+            return 'Please complete the reCAPTCHA verification.';
+        }
+
+        try {
+            $response = Http::asForm()
+                ->timeout(10)
+                ->post('https://www.google.com/recaptcha/api/siteverify', [
+                    'secret' => (string) $settings->recaptcha_secret_key,
+                    'response' => $token,
+                    'remoteip' => $request->ip(),
+                ]);
+        } catch (\Throwable $exception) {
+            return 'Unable to verify reCAPTCHA right now. Please try again.';
+        }
+
+        return $response->successful() && $response->json('success')
+            ? null
+            : 'reCAPTCHA verification failed. Please try again.';
     }
 }

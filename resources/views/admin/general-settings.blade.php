@@ -84,7 +84,7 @@
 
                                 <div class="bg-base-200 p-6 rounded-lg">
                                     <h3 class="text-xl font-semibold mb-2">Operator Logos</h3>
-                                    
+
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
                                         @foreach($operators as $operator)
                                         @php
@@ -489,6 +489,8 @@
                                 <li><a href="{{ route('admin.sms.config') }}">Mobile OTP Configuration</a></li>
                                 <li><a href="{{ route('admin.firebase.config') }}">Firebase Credentials</a></li>
                                 <li><a href="{{ route('admin.google.otp.config') }}">Google OTP</a></li>
+                                <li><a href="{{ route('admin.recaptcha.config') }}">reCAPTCHA Credentials</a></li>
+                                <li><a href="{{ route('admin.tawk.config') }}">Tawk Chat Credentials</a></li>
                             </ul>
                         </details>
                     </li>
