@@ -873,6 +873,11 @@ Route::post('/admin/login/otp', [AdminAuthController::class, 'verifyOtpChallenge
 Route::get('/dashboard', function () {
     $settings = \App\Models\HomepageSetting::first();
     $user = Auth::user();
+
+    if ($user && Schema::hasColumn('users', 'referral_code')) {
+        $user->ensureReferralCode();
+    }
+
     $pendingDriveRequests = \App\Models\DriveRequest::where('user_id', $user->id)
         ->where('status', 'pending')
         ->with('package')
@@ -1009,6 +1014,76 @@ Route::get('/dashboard', function () {
         'apiDocs' => \App\Http\Controllers\HomepageController::providerApiDocs(),
     ]);
 })->middleware(['auth', 'prevent.back'])->name('dashboard');
+
+Route::post('/dashboard/referral/convert', function () {
+    $hasReferralColumns = Schema::hasColumn('users', 'referral_coin')
+        && Schema::hasColumn('homepage_settings', 'referral_convert_coin')
+        && Schema::hasColumn('homepage_settings', 'referral_convert_amount');
+
+    if (! $hasReferralColumns) {
+        return redirect()->route('user.profile')->with('error', 'Referral system is not ready yet.');
+    }
+
+    $settings = HomepageSetting::firstOrCreate([]);
+    $coinRate = (int) ($settings->referral_convert_coin ?? 0);
+    $amountRate = round((float) ($settings->referral_convert_amount ?? 0), 2);
+
+    if ($coinRate <= 0 || $amountRate <= 0) {
+        return redirect()->route('user.profile')->with('error', 'Referral conversion is not configured yet.');
+    }
+
+    $result = DB::transaction(function () use ($coinRate, $amountRate) {
+        $user = User::query()->lockForUpdate()->find(Auth::id());
+
+        if (! $user) {
+            return null;
+        }
+
+        $availableCoins = (int) ($user->referral_coin ?? 0);
+        $units = intdiv($availableCoins, $coinRate);
+
+        if ($units < 1) {
+            return null;
+        }
+
+        $usedCoins = $units * $coinRate;
+        $creditAmount = round($units * $amountRate, 2);
+
+        $user->update([
+            'referral_coin' => $availableCoins - $usedCoins,
+            'main_bal' => round((float) $user->main_bal + $creditAmount, 2),
+        ]);
+
+        if (Schema::hasTable('balance_add_history')) {
+            $historyData = [
+                'user_id' => $user->id,
+                'amount' => $creditAmount,
+                'type' => 'referral',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+
+            if (Schema::hasColumn('balance_add_history', 'description')) {
+                $historyData['description'] = 'Referral coin converted to main balance.';
+            }
+
+            DB::table('balance_add_history')->insert($historyData);
+        }
+
+        return [
+            'used_coins' => $usedCoins,
+            'credit_amount' => $creditAmount,
+        ];
+    });
+
+    if (! $result) {
+        return redirect()->route('user.profile')->with('error', 'Not enough referral coin to convert.');
+    }
+
+    return redirect()
+        ->route('user.profile')
+        ->with('success', 'Converted ' . $result['used_coins'] . ' referral coin to ৳' . number_format($result['credit_amount'], 2) . ' balance.');
+})->middleware(['auth', 'prevent.back'])->name('user.referral.convert');
 
 Route::get('/add-balance', function () use ($renderUserAddBalancePage) {
     return $renderUserAddBalancePage();
@@ -1608,6 +1683,10 @@ Route::get('/drive-offers/{operator}/confirm/{package}', function ($operator, $p
 Route::get('/profile', function () {
     $settings = HomepageSetting::firstOrCreate([]);
     $user = Auth::user();
+
+    if ($user && Schema::hasColumn('users', 'referral_code')) {
+        $user->ensureReferralCode();
+    }
 
     return view('user-profile', compact('settings', 'user'));
 })->middleware(['auth', 'prevent.back', 'permission:profile'])->name('user.profile');

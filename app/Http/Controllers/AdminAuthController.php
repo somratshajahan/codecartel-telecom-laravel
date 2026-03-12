@@ -11,10 +11,15 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\RateLimiter;
 
 class AdminAuthController extends Controller
 {
     private const OTP_LOGIN_SESSION_KEY = 'auth.admin_otp_login';
+    private const LOGIN_MAX_ATTEMPTS = 5;
+    private const LOGIN_DECAY_SECONDS = 300;
+    private const OTP_MAX_ATTEMPTS = 5;
+    private const OTP_DECAY_SECONDS = 300;
 
     public function __construct(
         protected DeviceApprovalService $deviceApprovalService,
@@ -40,6 +45,16 @@ class AdminAuthController extends Controller
             'pin' => ['required', 'digits:4'],
         ]);
 
+        if ($response = $this->throttleResponse(
+            $request,
+            $this->loginThrottleKey($request),
+            self::LOGIN_MAX_ATTEMPTS,
+            'email',
+            'Too many admin login attempts.'
+        )) {
+            return $response;
+        }
+
         if (! $this->securityRuntime->validateLoginCaptcha($request, 'admin', $request->input('captcha'))) {
             return back()->withErrors([
                 'captcha' => 'Invalid captcha answer.',
@@ -58,28 +73,38 @@ class AdminAuthController extends Controller
         $user = User::query()->where('email', $validated['email'])->first();
 
         if (! $user || ! Hash::check($validated['password'], $user->password)) {
+            $this->hitThrottle($this->loginThrottleKey($request), self::LOGIN_DECAY_SECONDS);
+
             return back()->withErrors([
                 'email' => 'Invalid email or password.',
             ])->withInput($request->except(['password', 'pin']));
         }
 
         if (! $user || ! $user->is_admin) {
+            $this->hitThrottle($this->loginThrottleKey($request), self::LOGIN_DECAY_SECONDS);
+
             return back()->withErrors([
                 'email' => 'This account is not authorized as admin.',
             ])->withInput($request->except(['password', 'pin']));
         }
 
         if (! $user->is_active) {
+            $this->hitThrottle($this->loginThrottleKey($request), self::LOGIN_DECAY_SECONDS);
+
             return back()->withErrors([
                 'email' => 'Your account has been deactivated. Please contact support.',
             ])->withInput($request->except(['password', 'pin']));
         }
 
         if (! $user->pin || ! Hash::check($validated['pin'], $user->pin)) {
+            $this->hitThrottle($this->loginThrottleKey($request), self::LOGIN_DECAY_SECONDS);
+
             return back()->withErrors([
                 'pin' => 'Invalid admin PIN. Please check your 4-digit PIN.',
             ])->withInput($request->except(['password', 'pin']));
         }
+
+        RateLimiter::clear($this->loginThrottleKey($request));
 
         if ($settings?->google_otp_enabled && $user->google_otp_enabled) {
             $request->session()->put(self::OTP_LOGIN_SESSION_KEY, [
@@ -132,6 +157,16 @@ class AdminAuthController extends Controller
             ]);
         }
 
+        if ($response = $this->throttleResponse(
+            $request,
+            $this->otpThrottleKey($request, $pendingLogin),
+            self::OTP_MAX_ATTEMPTS,
+            'otp',
+            'Too many admin OTP attempts.'
+        )) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'otp' => ['nullable', 'digits:6'],
         ]);
@@ -146,6 +181,7 @@ class AdminAuthController extends Controller
 
         if (! $user || ! $user->is_admin) {
             $request->session()->forget(self::OTP_LOGIN_SESSION_KEY);
+            RateLimiter::clear($this->otpThrottleKey($request, $pendingLogin));
 
             return redirect()->route('admin.login')->withErrors([
                 'email' => 'Unable to continue this admin login request. Please try again.',
@@ -154,6 +190,7 @@ class AdminAuthController extends Controller
 
         if (! $user->is_active) {
             $request->session()->forget(self::OTP_LOGIN_SESSION_KEY);
+            RateLimiter::clear($this->otpThrottleKey($request, $pendingLogin));
 
             return redirect()->route('admin.login')->withErrors([
                 'email' => 'Your account has been deactivated. Please contact support.',
@@ -163,14 +200,20 @@ class AdminAuthController extends Controller
         $settings = HomepageSetting::first();
 
         if (! $settings?->google_otp_enabled || ! $user->google_otp_enabled) {
+            RateLimiter::clear($this->otpThrottleKey($request, $pendingLogin));
+
             return $this->completeLogin($user, $request, (bool) ($pendingLogin['remember'] ?? false));
         }
 
         if (! $this->googleOtpService->verifyCode((string) $user->google_otp_secret, $validated['otp'])) {
+            $this->hitThrottle($this->otpThrottleKey($request, $pendingLogin), self::OTP_DECAY_SECONDS);
+
             return back()->withErrors([
                 'otp' => 'Invalid Google Authenticator OTP.',
             ]);
         }
+
+        RateLimiter::clear($this->otpThrottleKey($request, $pendingLogin));
 
         return $this->completeLogin($user, $request, (bool) ($pendingLogin['remember'] ?? false));
     }
@@ -192,6 +235,34 @@ class AdminAuthController extends Controller
         return is_array($pendingLogin) && filled($pendingLogin['user_id'] ?? null)
             ? $pendingLogin
             : null;
+    }
+
+    protected function loginThrottleKey(Request $request): string
+    {
+        return 'auth:admin:login:' . strtolower((string) $request->input('email')) . '|' . $request->ip();
+    }
+
+    protected function otpThrottleKey(Request $request, array $pendingLogin): string
+    {
+        return 'auth:admin:otp:' . (string) ($pendingLogin['user_id'] ?? 'guest') . '|' . $request->ip();
+    }
+
+    protected function throttleResponse(Request $request, string $key, int $maxAttempts, string $field, string $label)
+    {
+        if (! RateLimiter::tooManyAttempts($key, $maxAttempts)) {
+            return null;
+        }
+
+        $seconds = max(1, RateLimiter::availableIn($key));
+
+        return back()->withErrors([
+            $field => $label . ' Please try again in ' . $seconds . ' seconds.',
+        ])->withInput($request->except(['password', 'pin', 'captcha', 'g-recaptcha-response', 'otp']));
+    }
+
+    protected function hitThrottle(string $key, int $decaySeconds): void
+    {
+        RateLimiter::hit($key, $decaySeconds);
     }
 
     protected function recaptchaEnabled(?HomepageSetting $settings): bool

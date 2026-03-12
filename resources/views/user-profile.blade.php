@@ -95,6 +95,20 @@
                 </div>
                 @endif
 
+                @php
+                $referralCoin = (int) ($user->referral_coin ?? 0);
+                $referralRewardCoin = (int) ($settings->referral_reward_coin ?? 0);
+                $referralConvertCoin = (int) ($settings->referral_convert_coin ?? 0);
+                $referralConvertAmount = round((float) ($settings->referral_convert_amount ?? 0), 2);
+                $referralUnits = $referralConvertCoin > 0 ? intdiv($referralCoin, $referralConvertCoin) : 0;
+                $referralUsedCoins = $referralUnits * $referralConvertCoin;
+                $referralConvertibleAmount = round($referralUnits * $referralConvertAmount, 2);
+                @endphp
+
+                <div class="flex flex-wrap gap-3 mb-6">
+                    <a href="#referral-information" class="btn btn-primary">Referral</a>
+                </div>
+
                 <!-- Row 1: Info Cards -->
                 <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                     <div class="card bg-base-100 shadow-xl">
@@ -190,6 +204,39 @@
                                 <div class="flex justify-between">
                                     <span class="font-semibold">Last Updated:</span>
                                     <span>{{ $user->updated_at->format('d M Y') }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="referral-information" class="mt-6">
+                    <div class="card bg-base-100 shadow-xl">
+                        <div class="card-body">
+                            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                <div class="space-y-2">
+                                    <h2 class="card-title mb-1">Referral Information</h2>
+                                    <p><span class="font-semibold">My Referral Code:</span> {{ $user->referral_code ?: 'Not generated yet' }}</p>
+                                    <p><span class="font-semibold">Available Coin:</span> {{ $referralCoin }}</p>
+                                    <p><span class="font-semibold">Reward Per Signup:</span> {{ $referralRewardCoin }} coin</p>
+                                    <p>
+                                        <span class="font-semibold">Conversion Rate:</span>
+                                        @if($referralConvertCoin > 0 && $referralConvertAmount > 0)
+                                        {{ $referralConvertCoin }} coin = ৳{{ number_format($referralConvertAmount, 2) }}
+                                        @else
+                                        Not configured yet
+                                        @endif
+                                    </p>
+                                </div>
+
+                                <div class="bg-base-200 rounded-xl p-4 min-w-[260px]">
+                                    <p class="text-sm text-base-content/70">Convertible Balance</p>
+                                    <p class="text-3xl font-bold mb-2">৳{{ number_format($referralConvertibleAmount, 2) }}</p>
+                                    <p class="text-sm text-base-content/70 mb-4">Used coins: {{ $referralUsedCoins }}</p>
+                                    <form method="POST" action="{{ route('user.referral.convert') }}">
+                                        @csrf
+                                        <button type="submit" class="btn btn-primary w-full" @disabled($referralConvertibleAmount <=0)>Convert to Main Balance</button>
+                                    </form>
                                 </div>
                             </div>
                         </div>

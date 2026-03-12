@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Str;
 
 class User extends Authenticatable
 {
@@ -24,6 +25,9 @@ class User extends Authenticatable
         'email',
         'username',
         'mobile',
+        'referral_code',
+        'referred_by',
+        'referral_coin',
         'nid',
         'profile_picture',
         'password',
@@ -84,7 +88,30 @@ class User extends Authenticatable
             'google_otp_confirmed_at' => 'datetime',
             'api_access_enabled' => 'boolean',
             'api_services' => 'array',
+            'referral_coin' => 'integer',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $user): void {
+            $referralCode = Str::upper(trim((string) ($user->referral_code ?? '')));
+
+            if ($referralCode === '') {
+                $referralCode = static::generateReferralCode();
+            }
+
+            $user->referral_code = $referralCode;
+        });
+    }
+
+    public static function generateReferralCode(): string
+    {
+        do {
+            $code = Str::upper(Str::random(8));
+        } while (self::query()->where('referral_code', $code)->exists());
+
+        return $code;
     }
 
     public static function apiServiceOptions(): array
@@ -232,6 +259,44 @@ class User extends Authenticatable
     public function parent()
     {
         return $this->belongsTo(User::class, 'parent_id');
+    }
+
+    public function referrer()
+    {
+        return $this->belongsTo(User::class, 'referred_by');
+    }
+
+    public function referrals()
+    {
+        return $this->hasMany(User::class, 'referred_by');
+    }
+
+    public function ensureReferralCode(): void
+    {
+        $referralCode = Str::upper(trim((string) ($this->referral_code ?? '')));
+        $hasDuplicateCode = $referralCode !== ''
+            && static::query()
+            ->where('referral_code', $referralCode)
+            ->where($this->getKeyName(), '!=', $this->getKey())
+            ->exists();
+
+        if ($referralCode !== '' && ! $hasDuplicateCode) {
+            if ($this->referral_code !== $referralCode) {
+                $this->forceFill([
+                    'referral_code' => $referralCode,
+                ])->save();
+            }
+
+            $this->referral_code = $referralCode;
+
+            return;
+        }
+
+        $this->forceFill([
+            'referral_code' => static::generateReferralCode(),
+        ])->save();
+
+        $this->refresh();
     }
 
     public function apiDomains()

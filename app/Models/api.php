@@ -16,6 +16,7 @@ class Api extends Model
         'api_key',
         'provider',
         'api_url',
+        'client_domain',
         'status',
         'balance',
         'main_balance',

@@ -288,12 +288,13 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
                         </svg>
                     </div>
-                    <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
+                    <ul tabindex="0" class="mt-3 z-10 p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
                         <li><a href="#home" class="font-medium">Home</a></li>
                         <li><a href="#operators" class="font-medium">Operators</a></li>
                         <li><a href="#features" class="font-medium">Features</a></li>
-                        <li><a href="#contact" class="font-medium">Contact</a></li>
                         <li><a href="#docs" class="font-medium">Docs</a></li>
+                        <li><a href="#contact" class="font-medium">Contact</a></li>
+
                     </ul>
                 </div>
             </div>
@@ -304,8 +305,9 @@
                     <li><a href="#home" class="font-medium hover:text-primary">Home</a></li>
                     <li><a href="#operators" class="font-medium hover:text-primary">Operators</a></li>
                     <li><a href="#features" class="font-medium hover:text-primary">Features</a></li>
-                    <li><a href="#contact" class="font-medium hover:text-primary">Contact</a></li>
                     <li><a href="#docs" class="font-medium hover:text-primary">Docs</a></li>
+                    <li><a href="#contact" class="font-medium hover:text-primary">Contact</a></li>
+
                 </ul>
                 <div class="flex items-center gap-2">
                     <a href="/login" class="btn btn-ghost btn-sm">Login</a>
@@ -328,9 +330,9 @@
                 </div>
 
                 <div class="branding-slider-stage">
-                    <div class="branding-slider-box" style="--total-slides: {{ max(($slides ?? collect())->count(), 1) }};">
+                    <div class="branding-slider-box" data-total-slides="{{ max(($slides ?? collect())->count(), 1) }}">
                         @foreach($slides as $slide)
-                        <span style="--i:{{ $loop->iteration }};">
+                        <span data-slide-index="{{ $loop->iteration }}">
                             <img src="{{ asset('storage/' . $slide->image_path) }}" alt="Slide {{ $slide->slot_number }}">
                         </span>
                         @endforeach
@@ -362,8 +364,8 @@
                         $operatorLogo = asset($operatorLogo);
                         }
                         @endphp
-                        <div class="w-16 h-16 rounded-full flex items-center justify-center mb-3"
-                            style="background-color: {{ $operator->circle_bg_color }};">
+                        <div class="w-16 h-16 rounded-full flex items-center justify-center mb-3 js-operator-logo"
+                            data-bg-color="{{ $operator->circle_bg_color }}">
                             @if($operatorLogo)
                             <img src="{{ $operatorLogo }}" alt="{{ $operator->name }}" class="w-10 h-10 rounded-full object-contain bg-base-100">
                             @else
@@ -640,6 +642,26 @@
         })();
     </script>
     @endif
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.branding-slider-box').forEach(function(sliderBox) {
+                var totalSlides = sliderBox.dataset.totalSlides || '1';
+
+                sliderBox.style.setProperty('--total-slides', totalSlides);
+
+                sliderBox.querySelectorAll('[data-slide-index]').forEach(function(slide) {
+                    slide.style.setProperty('--i', slide.dataset.slideIndex || '1');
+                });
+            });
+
+            document.querySelectorAll('.js-operator-logo').forEach(function(operatorLogo) {
+                if (operatorLogo.dataset.bgColor) {
+                    operatorLogo.style.backgroundColor = operatorLogo.dataset.bgColor;
+                }
+            });
+        });
+    </script>
 </body>
 
 </html>

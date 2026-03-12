@@ -97,6 +97,9 @@ class HomepageSetting extends Model
         'security_drive_balance',
         'security_balance_transfer',
         'security_commission_system',
+        'referral_reward_coin',
+        'referral_convert_coin',
+        'referral_convert_amount',
     ];
 
     protected $casts = [
@@ -109,5 +112,8 @@ class HomepageSetting extends Model
         'security_bulk_flexi_limit' => 'integer',
         'security_auto_sending_limit' => 'integer',
         'security_daily_limit' => 'integer',
+        'referral_reward_coin' => 'integer',
+        'referral_convert_coin' => 'integer',
+        'referral_convert_amount' => 'float',
     ];
 }

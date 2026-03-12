@@ -179,6 +179,24 @@
                                     </div>
                                 </div>
 
+                                <div class="bg-base-200 p-6 rounded-lg">
+                                    <h3 class="text-xl font-semibold mb-4">Referral Settings</h3>
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div class="form-control">
+                                            <label class="label"><span class="label-text font-medium">Reward Coin Per Referral</span></label>
+                                            <input type="number" min="0" name="referral_reward_coin" class="input input-bordered w-full" value="{{ old('referral_reward_coin', $settings->referral_reward_coin ?? 0) }}">
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label"><span class="label-text font-medium">Coins Needed</span></label>
+                                            <input type="number" min="0" name="referral_convert_coin" class="input input-bordered w-full" value="{{ old('referral_convert_coin', $settings->referral_convert_coin ?? 0) }}">
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label"><span class="label-text font-medium">Balance Amount (TK)</span></label>
+                                            <input type="number" min="0" step="0.01" name="referral_convert_amount" class="input input-bordered w-full" value="{{ old('referral_convert_amount', $settings->referral_convert_amount ?? 0) }}">
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="flex justify-center pt-4">
                                     <button type="submit" class="btn btn-primary btn-lg">Save All Settings</button>
                                 </div>

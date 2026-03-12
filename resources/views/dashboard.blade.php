@@ -153,6 +153,18 @@
                 <h1 class="text-3xl font-bold">Welcome, {{ $user->name }}!</h1>
                 <p class="text-base-content/60 mb-8">Here's a quick overview of your account.</p>
 
+                @if(session('success'))
+                <div class="alert alert-success mb-4">
+                    <span>{{ session('success') }}</span>
+                </div>
+                @endif
+
+                @if(session('error'))
+                <div class="alert alert-error mb-4">
+                    <span>{{ session('error') }}</span>
+                </div>
+                @endif
+
                 <!-- Row 1: Add Balance & Services -->
                 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
                     <!-- Add Balance Button -->

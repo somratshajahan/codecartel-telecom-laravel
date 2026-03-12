@@ -30,7 +30,7 @@
             <main class="p-6 space-y-6">
                 @php
                 $isEditingConnection = !empty($editingConnection);
-                $openConnectionForm = $isEditingConnection || old('title') !== null || old('user_id') !== null || old('api_key') !== null || old('api_url') !== null;
+                $openConnectionForm = $isEditingConnection || old('title') !== null || old('user_id') !== null || old('api_key') !== null || old('api_url') !== null || old('client_domain') !== null;
                 @endphp
                 <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div>
@@ -75,7 +75,7 @@
                                         <div class="flex items-start justify-between gap-3">
                                             <div>
                                                 <h3 class="text-xl font-semibold">API Information</h3>
-                                                <p class="text-sm opacity-70">Api Title, user ID, API key, provider, URL, ar status set korun.</p>
+                                                <p class="text-sm opacity-70">Api Title, user ID, API key, provider, URL, client domain, ar status set korun.</p>
                                             </div>
                                             @if($isEditingConnection)
                                             <a href="{{ route('api.index') }}#api-connection-form" class="btn btn-sm btn-ghost">Cancel</a>
@@ -85,6 +85,11 @@
                                             @csrf
                                             @if($isEditingConnection)
                                             @method('PUT')
+                                            @endif
+                                            @if(!$hasApiConnectionClientDomainColumn)
+                                            <div class="alert alert-info text-sm">
+                                                <span>Client domain override use korte `php artisan migrate` run kore latest API connection column add korun.</span>
+                                            </div>
                                             @endif
                                             <div class="grid gap-4 md:grid-cols-2">
                                                 <div class="form-control">
@@ -112,6 +117,13 @@
                                                 <label class="label"><span class="label-text">API url</span></label>
                                                 <input type="text" name="api_url" class="input input-bordered" value="{{ old('api_url', $editingConnection->api_url ?? '') }}" placeholder="https://provider.example.com/balance" required />
                                             </div>
+                                            @if($hasApiConnectionClientDomainColumn)
+                                            <div class="form-control">
+                                                <label class="label"><span class="label-text">Client domain (optional)</span></label>
+                                                <input type="text" name="client_domain" class="input input-bordered" value="{{ old('client_domain', $editingConnection->client_domain ?? '') }}" placeholder="yourdomain.com" />
+                                                <label class="label"><span class="label-text-alt">Provider whitelist use korle ekhane public domain din. Localhost theke direct check fail korte pare.</span></label>
+                                            </div>
+                                            @endif
                                             <div class="rounded-2xl bg-base-200 p-4">
                                                 <input type="hidden" name="status" value="deactive" />
                                                 <label class="flex items-center justify-between gap-4">
@@ -163,6 +175,9 @@
                                         <td>
                                             <div class="font-semibold">{{ $connection->title }}</div>
                                             <div class="text-xs opacity-60 break-all">{{ $connection->api_url ?: 'No URL saved' }}</div>
+                                            @if($hasApiConnectionClientDomainColumn && filled($connection->client_domain))
+                                            <div class="text-xs opacity-60 break-all">Client domain: {{ $connection->client_domain }}</div>
+                                            @endif
                                         </td>
                                         <td>{{ $connection->user_id }}</td>
                                         <td>{{ $connection->provider }}</td>

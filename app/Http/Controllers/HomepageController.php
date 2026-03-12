@@ -241,11 +241,23 @@ class HomepageController extends Controller
 
     public function update(Request $request)
     {
-        $request->validate([
+        $hasReferralColumns = Schema::hasColumn('homepage_settings', 'referral_reward_coin')
+            && Schema::hasColumn('homepage_settings', 'referral_convert_coin')
+            && Schema::hasColumn('homepage_settings', 'referral_convert_amount');
+
+        $rules = [
             'logos.*' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:2048',
             'recaptcha_site_key' => ['nullable', 'string', 'max:255'],
             'recaptcha_secret_key' => ['nullable', 'string', 'max:4096'],
-        ]);
+        ];
+
+        if ($hasReferralColumns) {
+            $rules['referral_reward_coin'] = ['nullable', 'integer', 'min:0'];
+            $rules['referral_convert_coin'] = ['nullable', 'integer', 'min:0'];
+            $rules['referral_convert_amount'] = ['nullable', 'numeric', 'min:0'];
+        }
+
+        $request->validate($rules);
 
         $settings = HomepageSetting::firstOrCreate([]);
 
@@ -266,12 +278,26 @@ class HomepageController extends Controller
             'social_messenger_url',
         ]);
 
+        if ($hasReferralColumns) {
+            $data = array_merge($data, $request->only([
+                'referral_reward_coin',
+                'referral_convert_coin',
+                'referral_convert_amount',
+            ]));
+        }
+
         $data['recaptcha_site_key'] = filled(trim((string) ($data['recaptcha_site_key'] ?? '')))
             ? trim((string) $data['recaptcha_site_key'])
             : null;
         $data['recaptcha_secret_key'] = filled(trim((string) ($data['recaptcha_secret_key'] ?? '')))
             ? trim((string) $data['recaptcha_secret_key'])
             : null;
+
+        if ($hasReferralColumns) {
+            $data['referral_reward_coin'] = (int) ($data['referral_reward_coin'] ?? 0);
+            $data['referral_convert_coin'] = (int) ($data['referral_convert_coin'] ?? 0);
+            $data['referral_convert_amount'] = round((float) ($data['referral_convert_amount'] ?? 0), 2);
+        }
 
         if ($request->hasFile('company_logo')) {
             $logo = $request->file('company_logo');

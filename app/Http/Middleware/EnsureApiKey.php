@@ -5,10 +5,14 @@ namespace App\Http\Middleware;
 use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Symfony\Component\HttpFoundation\Response;
 
 class EnsureApiKey
 {
+    private const API_MAX_ATTEMPTS = 60;
+    private const API_DECAY_SECONDS = 60;
+
     public function handle(Request $request, Closure $next): Response
     {
         $apiKey = $this->extractApiKey($request);
@@ -31,6 +35,14 @@ class EnsureApiKey
                 'message' => 'Invalid API key.',
             ], 401);
         }
+
+        $throttleKey = $this->apiThrottleKey($request, $user);
+
+        if ($response = $this->throttleResponse($throttleKey, self::API_MAX_ATTEMPTS)) {
+            return $response;
+        }
+
+        RateLimiter::hit($throttleKey, self::API_DECAY_SECONDS);
 
         $clientDomain = $this->resolveClientDomain($request);
 
@@ -126,5 +138,25 @@ class EnsureApiKey
         return preg_match('/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/', $value)
             ? $value
             : null;
+    }
+
+    protected function apiThrottleKey(Request $request, User $user): string
+    {
+        return 'api:endpoint:' . $user->id . '|' . $request->ip() . '|' . sha1(strtolower((string) $request->path()));
+    }
+
+    protected function throttleResponse(string $key, int $maxAttempts): ?Response
+    {
+        if (! RateLimiter::tooManyAttempts($key, $maxAttempts)) {
+            return null;
+        }
+
+        $seconds = max(1, RateLimiter::availableIn($key));
+
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Too many API requests. Please try again in ' . $seconds . ' seconds.',
+            'retry_after' => $seconds,
+        ], 429)->header('Retry-After', (string) $seconds);
     }
 }

@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\DeviceApprovalService;
 use App\Services\FirebasePushNotificationService;
 use App\Services\GoogleOtpService;
+use App\Services\OtpService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -49,6 +50,9 @@ class ExampleTest extends TestCase
             $table->string('name');
             $table->string('email')->unique();
             $table->string('username')->nullable();
+            $table->string('referral_code')->nullable()->unique();
+            $table->unsignedBigInteger('referred_by')->nullable();
+            $table->unsignedInteger('referral_coin')->default(0);
             $table->string('password');
             $table->timestamp('password_changed_at')->nullable();
             $table->string('pin')->nullable();
@@ -90,6 +94,7 @@ class ExampleTest extends TestCase
             $table->string('api_key')->nullable();
             $table->string('provider');
             $table->string('api_url')->nullable();
+            $table->string('client_domain')->nullable();
             $table->string('status')->default('active');
             $table->decimal('balance', 15, 2)->default(0);
             $table->decimal('main_balance', 15, 2)->nullable();
@@ -170,6 +175,9 @@ class ExampleTest extends TestCase
             $table->string('security_drive_balance')->default('off');
             $table->string('security_balance_transfer')->default('on');
             $table->string('security_commission_system')->default('all_level');
+            $table->unsignedInteger('referral_reward_coin')->default(0);
+            $table->unsignedInteger('referral_convert_coin')->default(0);
+            $table->decimal('referral_convert_amount', 15, 2)->default(0);
             $table->timestamps();
         });
 
@@ -2141,6 +2149,35 @@ class ExampleTest extends TestCase
         ]);
     }
 
+    public function test_provider_api_auth_check_is_throttled_after_repeated_requests(): void
+    {
+        $user = $this->createLoginUser(1314, [
+            'name' => 'API Throttled User',
+            'email' => 'api-throttled-user@example.com',
+            'api_key' => 'THROTTLEDAPIKEY1234567890THROTTLEDAPIKEY1234',
+            'api_access_enabled' => true,
+        ]);
+
+        for ($attempt = 0; $attempt < 60; $attempt++) {
+            $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.84'])
+                ->postJson('/api/v1/auth-check', [
+                    'api_key' => $user->api_key,
+                ])
+                ->assertOk();
+        }
+
+        $response = $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.84'])
+            ->postJson('/api/v1/auth-check', [
+                'api_key' => $user->api_key,
+            ]);
+
+        $response->assertStatus(429)->assertJson([
+            'status' => 'error',
+        ]);
+
+        $this->assertStringContainsString('Too many API requests.', (string) $response->json('message'));
+    }
+
     public function test_provider_api_recharge_creates_pending_request_and_deducts_main_balance(): void
     {
         $this->ensureFlexiRequestsTable();
@@ -2824,6 +2861,154 @@ class ExampleTest extends TestCase
         $this->assertAuthenticatedAs($user);
     }
 
+    public function test_user_login_is_throttled_after_repeated_failed_attempts(): void
+    {
+        $this->createLoginUser(1071, [
+            'name' => 'Throttled User',
+            'email' => 'throttled-user@example.com',
+        ]);
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->from('/login')
+                ->withServerVariables(['REMOTE_ADDR' => '203.0.113.71'])
+                ->post('/login', [
+                    'email' => 'throttled-user@example.com',
+                    'password' => 'wrong-password',
+                    'pin' => '1234',
+                ])
+                ->assertRedirect('/login')
+                ->assertSessionHasErrors(['email']);
+        }
+
+        $this->from('/login')
+            ->withServerVariables(['REMOTE_ADDR' => '203.0.113.71'])
+            ->post('/login', [
+                'email' => 'throttled-user@example.com',
+                'password' => 'wrong-password',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/login')
+            ->assertSessionHasErrors(['email'])
+            ->assertSessionHas('errors', fn($errors) => str_contains($errors->first('email'), 'Too many login attempts.'));
+    }
+
+    public function test_user_otp_verification_is_throttled_after_repeated_failed_attempts(): void
+    {
+        DB::table('homepage_settings')->insert([
+            'company_name' => 'Codecartel Telecom',
+            'google_otp_enabled' => true,
+            'google_otp_issuer' => 'Codecartel Secure',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->createLoginUser(1072, [
+            'name' => 'OTP Throttled User',
+            'email' => 'otp-throttled-user@example.com',
+            'google_otp_secret' => 'JBSWY3DPEHPK3PXP',
+            'google_otp_enabled' => true,
+            'google_otp_confirmed_at' => now(),
+        ]);
+
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.72'])
+            ->post('/login', [
+                'email' => 'otp-throttled-user@example.com',
+                'password' => 'secret123',
+                'pin' => '1234',
+            ])
+            ->assertRedirect(route('login.otp.show'));
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->from(route('login.otp.show'))
+                ->withServerVariables(['REMOTE_ADDR' => '203.0.113.72'])
+                ->post(route('login.otp.verify'), [
+                    'otp' => '000000',
+                ])
+                ->assertRedirect(route('login.otp.show'))
+                ->assertSessionHasErrors(['otp']);
+        }
+
+        $this->from(route('login.otp.show'))
+            ->withServerVariables(['REMOTE_ADDR' => '203.0.113.72'])
+            ->post(route('login.otp.verify'), [
+                'otp' => '000000',
+            ])
+            ->assertRedirect(route('login.otp.show'))
+            ->assertSessionHasErrors(['otp'])
+            ->assertSessionHas('errors', fn($errors) => str_contains($errors->first('otp'), 'Too many OTP attempts.'));
+    }
+
+    public function test_registration_email_otp_send_is_throttled_after_repeated_requests(): void
+    {
+        $this->mock(OtpService::class, function ($mock) {
+            $mock->shouldReceive('sendOtp')
+                ->times(3)
+                ->with('register-otp@example.com', 'registration', 'email')
+                ->andReturn(true);
+        });
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.73'])
+                ->postJson('/send-registration-otp', [
+                    'email' => 'register-otp@example.com',
+                ])
+                ->assertOk()
+                ->assertJson([
+                    'success' => true,
+                    'message' => 'OTP sent to your email.',
+                ]);
+        }
+
+        $response = $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.73'])
+            ->postJson('/send-registration-otp', [
+                'email' => 'register-otp@example.com',
+            ]);
+
+        $response->assertStatus(429)->assertJson([
+            'success' => false,
+        ]);
+
+        $this->assertStringContainsString('Too many OTP requests.', (string) $response->json('message'));
+    }
+
+    public function test_forgot_password_email_otp_send_is_throttled_after_repeated_requests(): void
+    {
+        $user = $this->createLoginUser(1073, [
+            'name' => 'Forgot Password OTP User',
+            'email' => 'forgot-password-otp@example.com',
+        ]);
+
+        $this->mock(OtpService::class, function ($mock) use ($user) {
+            $mock->shouldReceive('sendOtp')
+                ->times(3)
+                ->with($user->email, 'forgot_password', 'email')
+                ->andReturn(true);
+        });
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.74'])
+                ->postJson('/send-forgot-password-otp', [
+                    'email' => $user->email,
+                ])
+                ->assertOk()
+                ->assertJson([
+                    'success' => true,
+                    'message' => 'OTP sent to your email.',
+                ]);
+        }
+
+        $response = $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.74'])
+            ->postJson('/send-forgot-password-otp', [
+                'email' => $user->email,
+            ]);
+
+        $response->assertStatus(429)->assertJson([
+            'success' => false,
+        ]);
+
+        $this->assertStringContainsString('Too many OTP requests.', (string) $response->json('message'));
+    }
+
     public function test_admin_login_requires_google_otp_when_enabled_for_account(): void
     {
         DB::table('homepage_settings')->insert([
@@ -2980,6 +3165,96 @@ class ExampleTest extends TestCase
 
         $response->assertRedirect(route('admin.dashboard'));
         $this->assertAuthenticatedAs($admin);
+    }
+
+    public function test_admin_login_is_throttled_after_repeated_failed_attempts(): void
+    {
+        $this->createLoginUser(12101, [
+            'name' => 'Throttled Admin',
+            'email' => 'throttled-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->from('/admin/login')
+                ->withServerVariables(['REMOTE_ADDR' => '203.0.113.81'])
+                ->post('/admin/login', [
+                    'email' => 'throttled-admin@example.com',
+                    'password' => 'wrong-password',
+                    'pin' => '1234',
+                ])
+                ->assertRedirect('/admin/login')
+                ->assertSessionHasErrors(['email']);
+        }
+
+        $this->from('/admin/login')
+            ->withServerVariables(['REMOTE_ADDR' => '203.0.113.81'])
+            ->post('/admin/login', [
+                'email' => 'throttled-admin@example.com',
+                'password' => 'wrong-password',
+                'pin' => '1234',
+            ])
+            ->assertRedirect('/admin/login')
+            ->assertSessionHasErrors(['email'])
+            ->assertSessionHas('errors', fn($errors) => str_contains($errors->first('email'), 'Too many admin login attempts.'));
+    }
+
+    public function test_admin_otp_verification_is_throttled_after_repeated_failed_attempts(): void
+    {
+        DB::table('homepage_settings')->insert([
+            'company_name' => 'Codecartel Telecom',
+            'google_otp_enabled' => true,
+            'google_otp_issuer' => 'Codecartel Secure',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->createLoginUser(12102, [
+            'name' => 'OTP Throttled Admin',
+            'email' => 'otp-throttled-admin@example.com',
+            'is_admin' => true,
+            'google_otp_secret' => 'JBSWY3DPEHPK3PXP',
+            'google_otp_enabled' => true,
+            'google_otp_confirmed_at' => now(),
+        ]);
+
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.82'])
+            ->post('/admin/login', [
+                'email' => 'otp-throttled-admin@example.com',
+                'password' => 'secret123',
+                'pin' => '1234',
+            ])
+            ->assertRedirect(route('admin.login.otp.show'));
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->from(route('admin.login.otp.show'))
+                ->withServerVariables(['REMOTE_ADDR' => '203.0.113.82'])
+                ->post(route('admin.login.otp.verify'), [
+                    'otp' => '000000',
+                ])
+                ->assertRedirect(route('admin.login.otp.show'))
+                ->assertSessionHasErrors(['otp']);
+        }
+
+        $this->from(route('admin.login.otp.show'))
+            ->withServerVariables(['REMOTE_ADDR' => '203.0.113.82'])
+            ->post(route('admin.login.otp.verify'), [
+                'otp' => '000000',
+            ])
+            ->assertRedirect(route('admin.login.otp.show'))
+            ->assertSessionHasErrors(['otp'])
+            ->assertSessionHas('errors', fn($errors) => str_contains($errors->first('otp'), 'Too many admin OTP attempts.'));
+    }
+
+    public function test_web_responses_include_security_headers(): void
+    {
+        $this->get('/login')
+            ->assertOk()
+            ->assertHeader('X-Frame-Options', 'SAMEORIGIN')
+            ->assertHeader('X-Content-Type-Options', 'nosniff')
+            ->assertHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+            ->assertHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=()')
+            ->assertHeader('X-Permitted-Cross-Domain-Policies', 'none');
     }
 
     public function test_admin_payment_gateway_page_loads_successfully(): void
@@ -3424,6 +3699,53 @@ class ExampleTest extends TestCase
 
         $this->assertSame('123.45', number_format((float) DB::table('apis')->where('id', 14)->value('balance'), 2, '.', ''));
         $this->assertSame(1, (int) DB::table('api_connection_approvals')->where('api_id', 14)->value('status'));
+    }
+
+    public function test_admin_balance_check_prefers_saved_client_domain_override_for_local_environment(): void
+    {
+        config(['app.url' => 'http://localhost']);
+
+        $admin = $this->createLoginUser(1317, [
+            'name' => 'API Override Domain Admin',
+            'email' => 'api-override-domain-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        DB::table('apis')->insert([
+            'id' => 15,
+            'title' => 'Override Domain API',
+            'user_id' => 'override-15',
+            'api_key' => 'override-key',
+            'provider' => 'same billing',
+            'api_url' => 'provider.example.test',
+            'client_domain' => 'public-client.example.com',
+            'status' => 'active',
+            'balance' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        Http::fake([
+            'https://provider.example.test' => Http::response([], 404),
+            'https://provider.example.test/balance' => Http::response([
+                'status' => 'success',
+                'balance' => 555.25,
+            ], 200),
+        ]);
+
+        $this->actingAs($admin)
+            ->post('/api-settings/connections/15/balance-check')
+            ->assertRedirect('/api-settings')
+            ->assertSessionHas('success', 'Balance checked successfully for Override Domain API.');
+
+        Http::assertSent(function (\Illuminate\Http\Client\Request $request) {
+            return $request->url() === 'https://provider.example.test/balance'
+                && (($request->header('X-Client-Domain')[0] ?? null) === 'public-client.example.com')
+                && (($request->data()['domain'] ?? null) === 'public-client.example.com');
+        });
+
+        $this->assertSame('555.25', number_format((float) DB::table('apis')->where('id', 15)->value('balance'), 2, '.', ''));
+        $this->assertSame(1, (int) DB::table('api_connection_approvals')->where('api_id', 15)->value('status'));
     }
 
     public function test_admin_balance_check_clears_snapshot_and_sets_approval_deactive_when_provider_response_fails(): void
@@ -9329,6 +9651,207 @@ class ExampleTest extends TestCase
         $this->assertSame(-40.0, (float) $user->main_bal);
     }
 
+    public function test_registration_with_valid_referral_code_rewards_referrer(): void
+    {
+        $this->ensureOtpsTable();
+        $this->seedDepositSettings([
+            'retailer' => ['self_account_price' => 0],
+        ]);
+
+        \App\Models\HomepageSetting::firstOrCreate([])->update([
+            'referral_reward_coin' => 12,
+        ]);
+
+        $referrer = $this->createLoginUser(3270, [
+            'name' => 'Referral Referrer',
+            'email' => 'referrer@example.com',
+            'referral_code' => 'REFCODE1',
+            'referral_coin' => 5,
+        ]);
+
+        DB::table('otps')->insert([
+            'email' => 'referred-user@example.com',
+            'otp' => '123456',
+            'type' => 'registration',
+            'channel' => 'email',
+            'expires_at' => now()->addMinutes(10),
+            'is_used' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->post('/register', [
+            'name' => 'Referred User',
+            'email' => 'referred-user@example.com',
+            'password' => 'StrongPass123',
+            'password_confirmation' => 'StrongPass123',
+            'pin' => '1234',
+            'level' => 'retailer',
+            'otp' => '123456',
+            'referral_code' => 'refcode1',
+        ]);
+
+        $response->assertRedirect(route('dashboard'));
+
+        $newUser = User::query()->where('email', 'referred-user@example.com')->firstOrFail();
+
+        $this->assertSame($referrer->id, $newUser->referred_by);
+        $this->assertNotEmpty($newUser->referral_code);
+        $this->assertSame(17, (int) $referrer->fresh()->referral_coin);
+    }
+
+    public function test_registration_rejects_invalid_referral_code(): void
+    {
+        $this->ensureOtpsTable();
+
+        DB::table('otps')->insert([
+            'email' => 'invalid-referral-user@example.com',
+            'otp' => '123456',
+            'type' => 'registration',
+            'channel' => 'email',
+            'expires_at' => now()->addMinutes(10),
+            'is_used' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->from(route('register'))
+            ->post('/register', [
+                'name' => 'Invalid Referral User',
+                'email' => 'invalid-referral-user@example.com',
+                'password' => 'StrongPass123',
+                'password_confirmation' => 'StrongPass123',
+                'pin' => '1234',
+                'level' => 'retailer',
+                'otp' => '123456',
+                'referral_code' => 'INVALID1',
+            ])
+            ->assertRedirect(route('register'))
+            ->assertSessionHasErrors(['referral_code']);
+
+        $this->assertDatabaseMissing('users', [
+            'email' => 'invalid-referral-user@example.com',
+        ]);
+    }
+
+    public function test_profile_assigns_unique_referral_code_to_existing_user_without_one(): void
+    {
+        $user = $this->createLoginUser(3274, [
+            'name' => 'Referral Legacy User',
+            'email' => 'referral-legacy-user@example.com',
+            'referral_code' => null,
+        ]);
+
+        $response = $this->actingAs($user)
+            ->get(route('user.profile'));
+
+        $user->refresh();
+
+        $response->assertOk()
+            ->assertSee($user->referral_code);
+
+        $this->assertNotEmpty($user->referral_code);
+        $this->assertSame(strtoupper($user->referral_code), $user->referral_code);
+        $this->assertSame(1, User::query()->where('referral_code', $user->referral_code)->count());
+    }
+
+    public function test_referral_coin_conversion_credits_main_balance_and_logs_history(): void
+    {
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+
+        \App\Models\HomepageSetting::firstOrCreate([])->update([
+            'referral_convert_coin' => 10,
+            'referral_convert_amount' => 5,
+        ]);
+
+        $user = $this->createLoginUser(3271, [
+            'name' => 'Referral Convert User',
+            'email' => 'referral-convert-user@example.com',
+            'main_bal' => 100,
+            'referral_coin' => 27,
+            'referral_code' => 'CONVERT1',
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('user.referral.convert'))
+            ->assertRedirect(route('user.profile'))
+            ->assertSessionHas('success');
+
+        $user->refresh();
+
+        $this->assertSame(7, (int) $user->referral_coin);
+        $this->assertSame(110.0, (float) $user->main_bal);
+
+        $this->assertDatabaseHas('balance_add_history', [
+            'user_id' => $user->id,
+            'amount' => 10,
+            'type' => 'referral',
+            'description' => 'Referral coin converted to main balance.',
+        ]);
+    }
+
+    public function test_admin_can_save_referral_settings_from_general_settings_page(): void
+    {
+        $admin = $this->createLoginUser(3272, [
+            'name' => 'Referral Settings Admin',
+            'email' => 'referral-settings-admin@example.com',
+            'is_admin' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->post(route('admin.homepage.update'), [
+                'company_name' => 'Codecartel Telecom',
+                'referral_reward_coin' => 15,
+                'referral_convert_coin' => 30,
+                'referral_convert_amount' => 12.5,
+            ])
+            ->assertRedirect(route('admin.homepage.edit'))
+            ->assertSessionHas('success', 'Settings updated successfully.');
+
+        $settings = DB::table('homepage_settings')->first();
+
+        $this->assertNotNull($settings);
+        $this->assertSame('Codecartel Telecom', $settings->company_name);
+        $this->assertSame(15, (int) $settings->referral_reward_coin);
+        $this->assertSame(30, (int) $settings->referral_convert_coin);
+        $this->assertSame(12.5, (float) $settings->referral_convert_amount);
+    }
+
+    public function test_profile_shows_referral_summary_and_dashboard_hides_it(): void
+    {
+        $this->ensureAdminBalanceColumnsAndHistoryTable();
+        $this->ensureProviderApiDriveTables();
+        $this->ensureProviderApiInternetTables();
+
+        \App\Models\HomepageSetting::firstOrCreate([])->update([
+            'referral_reward_coin' => 8,
+            'referral_convert_coin' => 20,
+            'referral_convert_amount' => 10,
+        ]);
+
+        $user = $this->createLoginUser(3273, [
+            'name' => 'Referral Dashboard User',
+            'email' => 'referral-dashboard-user@example.com',
+            'referral_code' => 'DASH1234',
+            'referral_coin' => 45,
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertDontSee('Referral Information')
+            ->assertDontSee('Convert to Main Balance');
+
+        $this->actingAs($user)
+            ->get(route('user.profile'))
+            ->assertOk()
+            ->assertSee('Referral')
+            ->assertSee('Referral Information')
+            ->assertSee('DASH1234')
+            ->assertSee('Available Coin:')
+            ->assertSee('Convert to Main Balance');
+    }
+
     public function test_password_strong_setting_rejects_weak_forgot_password_reset(): void
     {
         $this->ensureOtpsTable();
@@ -11451,6 +11974,9 @@ class ExampleTest extends TestCase
             'name' => 'Login User',
             'email' => 'login-user-' . $id . '@example.com',
             'username' => null,
+            'referral_code' => null,
+            'referred_by' => null,
+            'referral_coin' => 0,
             'password' => Hash::make('secret123'),
             'pin' => Hash::make('1234'),
             'is_admin' => false,

@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ApiController extends Controller
 {
@@ -23,6 +24,7 @@ class ApiController extends Controller
         $hasApiConnectionsTable = Schema::hasTable('apis');
         $hasApiConnectionKeyColumn = $hasApiConnectionsTable && Schema::hasColumn('apis', 'api_key');
         $hasApiConnectionUrlColumn = $hasApiConnectionsTable && Schema::hasColumn('apis', 'api_url');
+        $hasApiConnectionClientDomainColumn = $hasApiConnectionsTable && Schema::hasColumn('apis', 'client_domain');
         $hasApiConnectionApprovalsTable = Schema::hasTable('api_connection_approvals');
         $hasApiConnectionMainBalanceColumn = $hasApiConnectionsTable && Schema::hasColumn('apis', 'main_balance');
         $hasApiConnectionDriveBalanceColumn = $hasApiConnectionsTable && Schema::hasColumn('apis', 'drive_balance');
@@ -140,6 +142,7 @@ class ApiController extends Controller
             'editingConnection',
             'connectionProviderOptions',
             'hasApiConnectionApprovalsTable',
+            'hasApiConnectionClientDomainColumn',
             'hasApiConnectionBalanceSnapshotColumns',
         ));
     }
@@ -324,7 +327,9 @@ class ApiController extends Controller
             'Authorization' => 'Bearer ' . $connection->api_key,
         ];
 
-        if ($clientDomain = $this->resolveConnectionClientDomain($request)) {
+        $clientDomain = $this->resolveConnectionClientDomain($request, $connection);
+
+        if ($clientDomain) {
             $headers['X-Client-Domain'] = $clientDomain;
             $payload['domain'] = $clientDomain;
         }
@@ -344,6 +349,13 @@ class ApiController extends Controller
 
             if (! $response->successful()) {
                 $lastError = 'Balance check failed. Provider returned HTTP ' . $response->status() . '.';
+
+                if ($response->status() === 403) {
+                    $preferredError ??= $clientDomain
+                        ? 'Balance check failed. Provider returned HTTP 403 for client domain ' . $clientDomain . '. Verify this domain is whitelisted on the provider side.'
+                        : 'Balance check failed. Provider returned HTTP 403. This provider may require a public whitelisted client domain. Save the allowed client domain in this connection and try again.';
+                }
+
                 continue;
             }
 
@@ -387,16 +399,37 @@ class ApiController extends Controller
 
     protected function validatedConnectionData(Request $request): array
     {
-        $validated = $request->validate([
+        $hasClientDomainColumn = Schema::hasTable('apis') && Schema::hasColumn('apis', 'client_domain');
+
+        $rules = [
             'title' => ['required', 'string', 'max:255'],
             'user_id' => ['required', 'string', 'max:255'],
             'api_key' => ['required', 'string', 'max:255'],
             'provider' => ['required', 'string', Rule::in(array_keys($this->connectionProviderOptions()))],
             'api_url' => ['required', 'string', 'max:2048'],
             'status' => ['required', 'string', Rule::in(['active', 'deactive'])],
-        ]);
+        ];
 
-        return [
+        if ($hasClientDomainColumn) {
+            $rules['client_domain'] = ['nullable', 'string', 'max:255'];
+        }
+
+        $validated = $request->validate($rules);
+
+        $rawClientDomain = trim((string) ($validated['client_domain'] ?? ''));
+        $clientDomain = null;
+
+        if ($hasClientDomainColumn && $rawClientDomain !== '') {
+            $clientDomain = $this->normalizeDomain($rawClientDomain);
+
+            if ($clientDomain === null) {
+                throw ValidationException::withMessages([
+                    'client_domain' => 'Enter a valid public domain like example.com.',
+                ]);
+            }
+        }
+
+        $data = [
             'title' => trim($validated['title']),
             'user_id' => trim($validated['user_id']),
             'api_key' => trim($validated['api_key']),
@@ -404,6 +437,12 @@ class ApiController extends Controller
             'api_url' => trim($validated['api_url']),
             'status' => $validated['status'],
         ];
+
+        if ($hasClientDomainColumn) {
+            $data['client_domain'] = $clientDomain;
+        }
+
+        return $data;
     }
 
     protected function apiConnectionSchemaError(): ?string
@@ -591,8 +630,21 @@ class ApiController extends Controller
         return array_values(array_unique(array_filter($urls, fn($url) => filter_var($url, FILTER_VALIDATE_URL))));
     }
 
-    protected function resolveConnectionClientDomain(Request $request): ?string
+    protected function resolveConnectionClientDomain(Request $request, ?Api $connection = null): ?string
     {
+        if (
+            $connection
+            && Schema::hasTable('apis')
+            && Schema::hasColumn('apis', 'client_domain')
+            && filled($connection->client_domain)
+        ) {
+            $configuredDomain = $this->normalizeDomain((string) $connection->client_domain);
+
+            if ($configuredDomain !== null) {
+                return $configuredDomain;
+            }
+        }
+
         $candidates = [
             $request->getHost(),
             parse_url((string) config('app.url'), PHP_URL_HOST),
