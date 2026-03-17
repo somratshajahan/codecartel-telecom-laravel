@@ -45,7 +45,7 @@
                 </div>
                 @endif
 
-                <div class="bg-gradient-to-r from-primary/10 to-secondary/10 p-6 rounded-lg mb-6">
+                <div class="bg-linear-to-r from-primary/10 to-secondary/10 p-6 rounded-lg mb-6">
                     <h3 class="font-bold text-lg mb-4">User Information</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div class="flex justify-between">

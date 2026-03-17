@@ -26,7 +26,7 @@
                             <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                                 <div>
                                     <h2 class="text-3xl font-bold">💬 Tawk Chat Credentials</h2>
-                                    <p class="text-sm opacity-70">Homepage-এ live chat widget show করার credentials এখানে manage করুন।</p>
+                                   
                                 </div>
                                 @if(session('success'))
                                     <div class="badge badge-success badge-lg">{{ session('success') }}</div>
@@ -39,7 +39,7 @@
                                 @csrf
                                 <div class="bg-base-200 p-6 rounded-lg space-y-4">
                                     <h3 class="text-xl font-semibold">Tawk Widget Setup</h3>
-                                    <p class="text-sm text-base-content/70">দুইটা field filled থাকলেই homepage-এ widget load হবে।</p>
+                                  
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div class="form-control"><label class="label"><span class="label-text font-medium">Tawk Property ID</span></label><input type="text" name="tawk_property_id" class="input input-bordered w-full @error('tawk_property_id') input-error @enderror" value="{{ old('tawk_property_id', $settings->tawk_property_id) }}" placeholder="67d1234567890abcdef1234">@error('tawk_property_id')<label class="label"><span class="label-text-alt text-error">{{ $message }}</span></label>@enderror</div>
                                         <div class="form-control"><label class="label"><span class="label-text font-medium">Tawk Widget ID</span></label><input type="text" name="tawk_widget_id" class="input input-bordered w-full @error('tawk_widget_id') input-error @enderror" value="{{ old('tawk_widget_id', $settings->tawk_widget_id) }}" placeholder="1i1234567">@error('tawk_widget_id')<label class="label"><span class="label-text-alt text-error">{{ $message }}</span></label>@enderror</div>

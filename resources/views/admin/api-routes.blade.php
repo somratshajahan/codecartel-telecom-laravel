@@ -45,7 +45,7 @@
                     <div>
                         <div class="breadcrumbs text-sm opacity-70"><ul><li><a href="{{ route('api.index') }}">API Settings</a></li><li>Routes</li></ul></div>
                         <h1 class="text-3xl font-bold">API Routing Management</h1>
-                        <p class="text-sm opacity-70">Route button click korle ei page-e ashbe. Ekhane routing rule add, modify, ar delete korte parben.</p>
+                      
                     </div>
                     <div class="flex flex-wrap gap-3">
                         <div class="badge badge-secondary badge-lg">{{ $routeStats['total_routes'] }} Saved Routes</div>
@@ -56,7 +56,7 @@
                 @if(session('success'))<div class="alert alert-success"><span>{{ session('success') }}</span></div>@endif
                 @if(session('error'))<div class="alert alert-error"><span>{{ session('error') }}</span></div>@endif
                 @if(!empty($schemaWarnings))
-                <div class="alert alert-warning text-sm"><span>Routing settings schema fully ready noy: {{ implode(', ', $schemaWarnings) }}. Full feature use korte `php artisan migrate` run korun.</span></div>
+                <div class="alert alert-warning text-sm"><span>Routing settings schema fully ready noy: {{ implode(', ', $schemaWarnings) }}. php migration run.</span></div>
                 @endif
                 @if($errors->any())
                 <div class="alert alert-error"><ul class="list-disc pl-5 text-sm">@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>
@@ -78,16 +78,65 @@
                         <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                             <div>
                                 <h2 class="card-title text-2xl">Route List & Setup</h2>
-                                <p class="text-sm opacity-70">Module, service, code, priority, prefix, ar status diye route rule set korun.</p>
+                               
                             </div>
                             <details class="dropdown dropdown-end" {{ $openRouteForm ? 'open' : '' }}>
                                 <summary class="btn btn-primary">{{ $isEditingRoute ? 'Modify Route' : 'Add Route' }}</summary>
-                                <div class="dropdown-content z-[1] mt-3 w-[min(100vw-3rem,42rem)] rounded-2xl border border-base-300 bg-base-100 p-0 shadow-2xl">
+                                <div class="dropdown-content z-1 mt-3 w-[min(100vw-3rem,42rem)] rounded-2xl border border-base-300 bg-base-100 p-0 shadow-2xl">
                                     <div class="card-body space-y-4">
                                         <div class="flex items-start justify-between gap-3">
                                             <div>
                                                 <h3 class="text-xl font-semibold">Routing Information</h3>
-                                                <p class="text-sm opacity-70">Routing Title, module, service, code, priority, prefix, ar status set korun.</p>
+                                                <p class="text-sm opacity-70">Routing Title, module, service, code, priority, prefix, ar status set @if($offers->count() > 0)
+    @foreach($offers as $offer)
+        @php
+            $endTime = \Carbon\Carbon::parse($offer->end_time);
+            $currentTime = \Carbon\Carbon::now();
+            $countdown = $endTime->diff($currentTime);
+        @endphp
+
+        <div class="offer-item mt-4">
+            <h3 class="font-medium">{{ $offer->title }}</h3>
+            <p class="text-base-content/70 mb-2">{{ $offer->description }}</p>
+            <div id="countdown-{{ $offer->id }}" class="countdown"></div>
+        </div>
+
+        @push('scripts')
+            <script>
+                function startCountdown(endTime, elementId) {
+                    var countdownElement = document.getElementById(elementId);
+                    var countdownInterval = setInterval(function() {
+                        var now = new Date().getTime();
+                        var distance = endTime - now;
+
+                        var days = Math.floor(distance / (1000 * 60 * 60 * 24));
+                        var hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                        var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                        var seconds = Math.floor((distance % (1000 * 60)) / 1000);
+
+                        countdownElement.innerHTML = days + "d " + hours + "h "
+                            + minutes + "m " + seconds + "s ";
+
+                        if (distance < 0) {
+                            clearInterval(countdownInterval);
+                            countdownElement.innerHTML = "EXPIRED";
+                            // You can also make an AJAX call to deactivate the offer here
+                        }
+                    }, 1000);
+                }
+
+                // Start countdown for each offer
+                document.addEventListener('DOMContentLoaded', function() {
+                    @php
+                        $endTime = \Carbon\Carbon::parse($offer->end_time)->timestamp * 1000; // Convert to milliseconds
+                    @endphp
+                    startCountdown({{ $endTime }}, 'countdown-{{ $offer->id }}');
+                });
+            </script>
+        @endpush
+    @endforeach
+@endif
+.</p>
                                             </div>
                                             @if($isEditingRoute)
                                             <a href="{{ route('api.routes.index', array_filter(['connection' => $selectedConnection->id ?? null])) }}#api-route-form" class="btn btn-sm btn-ghost">Cancel</a>
@@ -168,7 +217,7 @@
                                         <th>Priority</th>
                                         <th>Prefix</th>
                                         <th>Status</th>
-                                        <th class="min-w-[12rem]">Action</th>
+                                        <th class="min-w-48">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody>
