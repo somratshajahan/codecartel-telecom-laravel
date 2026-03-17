@@ -303,4 +303,14 @@ class User extends Authenticatable
     {
         return $this->hasMany(ApiDomain::class);
     }
+    
+    public function sentTransfers()
+    {
+        return $this->hasMany(BalanceTransfer::class, 'sender_id');
+    }
+
+    public function receivedTransfers()
+    {
+        return $this->hasMany(BalanceTransfer::class, 'receiver_id');
+    }
 }

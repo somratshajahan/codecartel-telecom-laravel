@@ -403,6 +403,15 @@ Route::post('/complaints/store', [ComplaintController::class, 'store'])
     ->middleware(['auth', 'prevent.back', 'permission:complaints'])
     ->name('complaints.store');
 
+// Balance Transfer Routes
+Route::middleware(['auth', 'prevent.back'])->group(function () {
+    Route::get('/balance-transfer', [\App\Http\Controllers\BalanceTransferController::class, 'index'])->name('balance.transfer.index');
+    Route::get('/balance-transfer/create', [\App\Http\Controllers\BalanceTransferController::class, 'create'])->name('balance.transfer.create');
+    Route::post('/balance-transfer', [\App\Http\Controllers\BalanceTransferController::class, 'store'])->name('balance.transfer.store');
+    Route::match(['get', 'post'], '/balance/check', [\App\Http\Controllers\BalanceTransferController::class, 'checkBalance'])->name('balance.transfer.checkBalance');
+    Route::get('/balance-transfer/user-suggestions', [\App\Http\Controllers\BalanceTransferController::class, 'userSuggestions'])->name('balance.transfer.userSuggestions');
+});
+
 // Admin Complaint Routes
 Route::get('/admin/complaints', [ComplaintController::class, 'adminIndex'])
     ->middleware(['auth', 'admin', 'prevent.back'])
@@ -874,6 +883,14 @@ Route::get('/dashboard', function () {
     $settings = \App\Models\HomepageSetting::first();
     $user = Auth::user();
 
+    if (Schema::hasTable('drive_packages') && Schema::hasColumn('drive_packages', 'offer_ends_at')) {
+        \App\Models\DrivePackage::query()
+            ->where('status', 'active')
+            ->whereNotNull('offer_ends_at')
+            ->where('offer_ends_at', '<=', now())
+            ->update(['status' => 'deactive']);
+    }
+
     if ($user && Schema::hasColumn('users', 'referral_code')) {
         $user->ensureReferralCode();
     }
@@ -1005,12 +1022,37 @@ Route::get('/dashboard', function () {
             : 'No successful recharge found',
     ];
 
+    $driveActiveOperatorCount = 0;
+    if (Schema::hasTable('drive_packages')) {
+        $driveActiveOperatorCount = \App\Models\DrivePackage::query()
+            ->where('status', 'active')
+            ->when(
+                Schema::hasColumn('drive_packages', 'offer_ends_at'),
+                fn($query) => $query->where(function ($innerQuery) {
+                    $innerQuery->whereNull('offer_ends_at')
+                        ->orWhere('offer_ends_at', '>', now());
+                })
+            )
+            ->distinct('operator')
+            ->count('operator');
+    }
+
+    $internetActiveOperatorCount = 0;
+    if (Schema::hasTable('regular_packages')) {
+        $internetActiveOperatorCount = \App\Models\RegularPackage::query()
+            ->where('status', 'active')
+            ->distinct('operator')
+            ->count('operator');
+    }
+
     return view('dashboard', [
         'user' => $user,
         'settings' => $settings,
         'pendingRequests' => $pendingRequests,
         'lastReceived' => $lastReceived,
         'usageStats' => $usageStats,
+        'driveActiveOperatorCount' => $driveActiveOperatorCount,
+        'internetActiveOperatorCount' => $internetActiveOperatorCount,
         'apiDocs' => \App\Http\Controllers\HomepageController::providerApiDocs(),
     ]);
 })->middleware(['auth', 'prevent.back'])->name('dashboard');
@@ -1529,15 +1571,99 @@ Route::post('/flexiload', function (Request $request) use ($normalizeFlexiOperat
 })->middleware(['auth', 'prevent.back'])->name('user.flexi.store');
 
 Route::get('/drive-offers', function () {
+    if (Schema::hasTable('drive_packages') && Schema::hasColumn('drive_packages', 'offer_ends_at')) {
+        \App\Models\DrivePackage::query()
+            ->where('status', 'active')
+            ->whereNotNull('offer_ends_at')
+            ->where('offer_ends_at', '<=', now())
+            ->update(['status' => 'deactive']);
+    }
+
     $settings = \App\Models\HomepageSetting::first();
     $operators = app(HomepageController::class)->selectionOperators();
-    return view('user-drive', compact('settings', 'operators'));
+    $driveActiveOfferCounts = [];
+
+    if (Schema::hasTable('drive_packages')) {
+        $driveRows = \App\Models\DrivePackage::query()
+            ->select('operator', DB::raw('COUNT(*) as total'))
+            ->where('status', 'active')
+            ->when(
+                Schema::hasColumn('drive_packages', 'offer_ends_at'),
+                fn($query) => $query->where(function ($innerQuery) {
+                    $innerQuery->whereNull('offer_ends_at')
+                        ->orWhere('offer_ends_at', '>', now());
+                })
+            )
+            ->groupBy('operator')
+            ->get();
+
+        foreach ($driveRows as $row) {
+            $count = (int) ($row->total ?? 0);
+            $rawKey = strtolower(trim((string) ($row->operator ?? '')));
+            $normalizedKey = strtolower(preg_replace('/[^a-z0-9]+/', '', (string) ($row->operator ?? '')));
+
+            if ($rawKey !== '') {
+                $driveActiveOfferCounts[$rawKey] = $count;
+            }
+
+            if ($normalizedKey !== '') {
+                $driveActiveOfferCounts[$normalizedKey] = $count;
+            }
+        }
+    }
+
+    $activeDriveOperatorCount = Schema::hasTable('drive_packages')
+        ? \App\Models\DrivePackage::query()
+            ->where('status', 'active')
+            ->when(
+                Schema::hasColumn('drive_packages', 'offer_ends_at'),
+                fn($query) => $query->where(function ($innerQuery) {
+                    $innerQuery->whereNull('offer_ends_at')
+                        ->orWhere('offer_ends_at', '>', now());
+                })
+            )
+            ->distinct('operator')
+            ->count('operator')
+        : 0;
+
+    return view('user-drive', compact('settings', 'operators', 'activeDriveOperatorCount', 'driveActiveOfferCounts'));
 })->middleware(['auth', 'prevent.back', 'permission:drive'])->name('user.drive');
 
 Route::get('/internet-packs', function () {
     $settings = \App\Models\HomepageSetting::first();
     $operators = app(HomepageController::class)->selectionOperators();
-    return view('user-internet', compact('settings', 'operators'));
+    $internetActiveOfferCounts = [];
+
+    if (Schema::hasTable('regular_packages')) {
+        $internetRows = \App\Models\RegularPackage::query()
+            ->select('operator', DB::raw('COUNT(*) as total'))
+            ->where('status', 'active')
+            ->groupBy('operator')
+            ->get();
+
+        foreach ($internetRows as $row) {
+            $count = (int) ($row->total ?? 0);
+            $rawKey = strtolower(trim((string) ($row->operator ?? '')));
+            $normalizedKey = strtolower(preg_replace('/[^a-z0-9]+/', '', (string) ($row->operator ?? '')));
+
+            if ($rawKey !== '') {
+                $internetActiveOfferCounts[$rawKey] = $count;
+            }
+
+            if ($normalizedKey !== '') {
+                $internetActiveOfferCounts[$normalizedKey] = $count;
+            }
+        }
+    }
+
+    $activeInternetOperatorCount = Schema::hasTable('regular_packages')
+        ? \App\Models\RegularPackage::query()
+            ->where('status', 'active')
+            ->distinct('operator')
+            ->count('operator')
+        : 0;
+
+    return view('user-internet', compact('settings', 'operators', 'activeInternetOperatorCount', 'internetActiveOfferCounts'));
 })->middleware(['auth', 'prevent.back', 'permission:internet'])->name('user.internet');
 
 Route::get('/internet-packs/{operator}', function ($operator) {
@@ -1646,9 +1772,24 @@ Route::post('/internet-packs/{operator}/buy/{package}', function (Request $reque
 })->middleware(['auth', 'prevent.back', 'permission:internet'])->name('user.internet.purchase');
 
 Route::get('/drive-offers/{operator}', function ($operator) {
+    if (Schema::hasTable('drive_packages') && Schema::hasColumn('drive_packages', 'offer_ends_at')) {
+        \App\Models\DrivePackage::query()
+            ->where('status', 'active')
+            ->whereNotNull('offer_ends_at')
+            ->where('offer_ends_at', '<=', now())
+            ->update(['status' => 'deactive']);
+    }
+
     $settings = \App\Models\HomepageSetting::first();
     $packages = \App\Models\DrivePackage::where('operator', $operator)
         ->where('status', 'active')
+        ->when(
+            Schema::hasColumn('drive_packages', 'offer_ends_at'),
+            fn($query) => $query->where(function ($innerQuery) {
+                $innerQuery->whereNull('offer_ends_at')
+                    ->orWhere('offer_ends_at', '>', now());
+            })
+        )
         ->get();
     return view('user-drive-packages', compact('settings', 'operator', 'packages'));
 })->middleware(['auth', 'prevent.back', 'permission:drive'])->name('user.drive.packages');

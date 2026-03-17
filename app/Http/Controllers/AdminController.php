@@ -23,6 +23,12 @@ use Illuminate\Validation\Rule;
 
 class AdminController extends Controller
 {
+    protected function hasDriveCountdownColumn(): bool
+    {
+        return Schema::hasTable('drive_packages')
+            && Schema::hasColumn('drive_packages', 'offer_ends_at');
+    }
+
     /**
      * Display the admin dashboard.
      */
@@ -928,6 +934,13 @@ class AdminController extends Controller
      */
     public function driveOffer()
     {
+        if ($this->hasDriveCountdownColumn()) {
+            DrivePackage::where('status', 'active')
+                ->whereNotNull('offer_ends_at')
+                ->where('offer_ends_at', '<=', now())
+                ->update(['status' => 'deactive']);
+        }
+
         $settings = HomepageSetting::first();
         $operators = Operator::all();
 
@@ -960,6 +973,13 @@ class AdminController extends Controller
      */
     public function manageDrivePackage($operator)
     {
+        if ($this->hasDriveCountdownColumn()) {
+            DrivePackage::where('status', 'active')
+                ->whereNotNull('offer_ends_at')
+                ->where('offer_ends_at', '<=', now())
+                ->update(['status' => 'deactive']);
+        }
+
         $settings = HomepageSetting::first();
         $packages = DrivePackage::where('operator', $operator)
             ->when(request('search'), function ($query) {
@@ -990,10 +1010,19 @@ class AdminController extends Controller
             'price' => 'required|numeric|min:0',
             'commission' => 'required|numeric|min:0',
             'expire' => 'required|date',
+            'countdown_minutes' => 'nullable|integer|min:1|max:43200',
             'status' => 'required|in:active,deactive'
         ]);
 
-        DrivePackage::create([
+        $countdownMinutes = filled($validated['countdown_minutes'] ?? null)
+            ? (int) $validated['countdown_minutes']
+            : null;
+
+        $offerEndsAt = ($validated['status'] === 'active' && $countdownMinutes !== null)
+            ? now()->addMinutes($countdownMinutes)
+            : null;
+
+        $payload = [
             'operator' => $operator,
             'name' => $validated['package_name'],
             'price' => $validated['price'],
@@ -1003,7 +1032,14 @@ class AdminController extends Controller
             'sell_today' => 0,
             'amount' => 0,
             'comm' => 0
-        ]);
+        ];
+
+        if ($this->hasDriveCountdownColumn()) {
+            $payload['countdown_minutes'] = $countdownMinutes;
+            $payload['offer_ends_at'] = $offerEndsAt;
+        }
+
+        DrivePackage::create($payload);
 
         return redirect()->route('admin.manage.drive.package', ['operator' => $operator])
             ->with('success', 'Package added successfully!');
@@ -1019,17 +1055,33 @@ class AdminController extends Controller
             'price' => 'required|numeric|min:0',
             'commission' => 'required|numeric|min:0',
             'expire' => 'required|date',
+            'countdown_minutes' => 'nullable|integer|min:1|max:43200',
             'status' => 'required|in:active,deactive'
         ]);
 
+        $countdownMinutes = filled($validated['countdown_minutes'] ?? null)
+            ? (int) $validated['countdown_minutes']
+            : null;
+
+        $offerEndsAt = ($validated['status'] === 'active' && $countdownMinutes !== null)
+            ? now()->addMinutes($countdownMinutes)
+            : null;
+
         $package = DrivePackage::findOrFail($id);
-        $package->update([
+        $payload = [
             'name' => $validated['package_name'],
             'price' => $validated['price'],
             'commission' => $validated['commission'],
             'expire' => $validated['expire'],
             'status' => $validated['status']
-        ]);
+        ];
+
+        if ($this->hasDriveCountdownColumn()) {
+            $payload['countdown_minutes'] = $countdownMinutes;
+            $payload['offer_ends_at'] = $offerEndsAt;
+        }
+
+        $package->update($payload);
 
         return redirect()->route('admin.manage.drive.package', ['operator' => $operator])
             ->with('success', 'Package updated successfully!');
@@ -2401,6 +2453,20 @@ class AdminController extends Controller
                 'status' => 'active',
             ],
             [
+                'title' => 'Balance Transfer',
+                'minimum_amount' => 1,
+                'maximum_amount' => 1000000,
+                'minimum_length' => 3,
+                'maximum_length' => 30,
+                'auto_send_limit' => 100000.00,
+                'require_pin' => true,
+                'require_name' => false,
+                'require_nid' => false,
+                'require_sender' => false,
+                'sort_order' => 3,
+                'status' => 'active',
+            ],
+            [
                 'title' => 'SMS',
                 'minimum_amount' => 1,
                 'maximum_amount' => 2000,
@@ -3506,6 +3572,23 @@ class AdminController extends Controller
         $editingServiceModule = null;
 
         if ($serviceModuleSchemaReady) {
+            ServiceModule::query()->firstOrCreate(
+                ['title' => 'Balance Transfer'],
+                [
+                    'minimum_amount' => 1,
+                    'maximum_amount' => 1000000,
+                    'minimum_length' => 3,
+                    'maximum_length' => 30,
+                    'auto_send_limit' => 100000.00,
+                    'require_pin' => true,
+                    'require_name' => false,
+                    'require_nid' => false,
+                    'require_sender' => false,
+                    'sort_order' => 3,
+                    'status' => 'active',
+                ]
+            );
+
             $rawServiceModules = ServiceModule::query()
                 ->orderBy('sort_order')
                 ->orderBy('title')
@@ -4065,17 +4148,33 @@ class AdminController extends Controller
             'price' => 'required|numeric|min:0',
             'commission' => 'required|numeric|min:0',
             'expire' => 'required|date',
+            'countdown_minutes' => 'nullable|integer|min:1|max:43200',
             'status' => 'required|in:active,deactive'
         ]);
 
-        DrivePackage::create([
+        $countdownMinutes = filled($validated['countdown_minutes'] ?? null)
+            ? (int) $validated['countdown_minutes']
+            : null;
+
+        $offerEndsAt = ($validated['status'] === 'active' && $countdownMinutes !== null)
+            ? now()->addMinutes($countdownMinutes)
+            : null;
+
+        $payload = [
             'operator' => $validated['operator'],
             'name' => $validated['name'],
             'price' => $validated['price'],
             'commission' => $validated['commission'],
             'expire' => $validated['expire'],
             'status' => $validated['status'],
-        ]);
+        ];
+
+        if ($this->hasDriveCountdownColumn()) {
+            $payload['countdown_minutes'] = $countdownMinutes;
+            $payload['offer_ends_at'] = $offerEndsAt;
+        }
+
+        DrivePackage::create($payload);
 
         $this->notifyAllUsers(
             'New Drive Offer Added',

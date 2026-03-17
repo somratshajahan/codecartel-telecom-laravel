@@ -12,6 +12,8 @@ class DrivePackage extends Model
         'price',
         'commission',
         'expire',
+        'countdown_minutes',
+        'offer_ends_at',
         'status',
         'sell_today',
         'amount',
@@ -22,6 +24,8 @@ class DrivePackage extends Model
         'price' => 'decimal:2',
         'commission' => 'decimal:2',
         'expire' => 'date',
+        'countdown_minutes' => 'integer',
+        'offer_ends_at' => 'datetime',
         'sell_today' => 'integer',
         'amount' => 'decimal:2',
         'comm' => 'decimal:2'

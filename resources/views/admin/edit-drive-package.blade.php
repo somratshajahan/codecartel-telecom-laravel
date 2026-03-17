@@ -56,6 +56,11 @@
                                         <input type="date" name="expire" value="{{ $package->expire->format('Y-m-d') }}" class="input input-bordered" required />
                                     </div>
                                     <div class="form-control">
+                                        <label class="label"><span class="label-text">Countdown (Minutes)</span></label>
+                                        <input type="number" name="countdown_minutes" value="{{ old('countdown_minutes', $package->countdown_minutes) }}" min="1" max="43200" class="input input-bordered" placeholder="e.g. 60" />
+                                        <label class="label"><span class="label-text-alt text-base-content/60">Optional. দিলে active থাকা অবস্থায় auto expire হবে।</span></label>
+                                    </div>
+                                    <div class="form-control">
                                         <label class="label"><span class="label-text">Status</span></label>
                                         <select name="status" class="select select-bordered" required>
                                             <option value="active" {{ $package->status == 'active' ? 'selected' : '' }}>Active</option>

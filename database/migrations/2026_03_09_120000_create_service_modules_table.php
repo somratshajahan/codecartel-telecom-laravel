@@ -1,5 +1,4 @@
 <?php
-
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +34,7 @@ return new class extends Migration
         DB::table('service_modules')->insert([
             ['title' => 'Flexiload', 'minimum_amount' => 10, 'maximum_amount' => 1499, 'minimum_length' => 11, 'maximum_length' => 11, 'auto_send_limit' => 1000.00, 'require_pin' => true, 'require_name' => false, 'require_nid' => false, 'require_sender' => false, 'sort_order' => 1, 'status' => 'active', 'created_at' => $timestamp, 'updated_at' => $timestamp],
             ['title' => 'InternetPack', 'minimum_amount' => 5, 'maximum_amount' => 5000, 'minimum_length' => 11, 'maximum_length' => 11, 'auto_send_limit' => 296.00, 'require_pin' => true, 'require_name' => false, 'require_nid' => false, 'require_sender' => false, 'sort_order' => 2, 'status' => 'active', 'created_at' => $timestamp, 'updated_at' => $timestamp],
+            ['title' => 'Balance Transfer', 'minimum_amount' => 1, 'maximum_amount' => 1000000, 'minimum_length' => 3, 'maximum_length' => 30, 'auto_send_limit' => 100000.00, 'require_pin' => true, 'require_name' => false, 'require_nid' => false, 'require_sender' => false, 'sort_order' => 3, 'status' => 'active', 'created_at' => $timestamp, 'updated_at' => $timestamp],
             ['title' => 'SMS', 'minimum_amount' => 1, 'maximum_amount' => 2000, 'minimum_length' => 11, 'maximum_length' => 11, 'auto_send_limit' => 500.00, 'require_pin' => true, 'require_name' => false, 'require_nid' => false, 'require_sender' => false, 'sort_order' => 4, 'status' => 'active', 'created_at' => $timestamp, 'updated_at' => $timestamp],
             ['title' => 'Internet Banking', 'minimum_amount' => 500, 'maximum_amount' => 1000000, 'minimum_length' => 11, 'maximum_length' => 20, 'auto_send_limit' => 20000.00, 'require_pin' => false, 'require_name' => false, 'require_nid' => false, 'require_sender' => true, 'sort_order' => 5, 'status' => 'active', 'created_at' => $timestamp, 'updated_at' => $timestamp],
             ['title' => 'Billpay', 'minimum_amount' => 50, 'maximum_amount' => 1000, 'minimum_length' => 5, 'maximum_length' => 15, 'auto_send_limit' => 300.00, 'require_pin' => true, 'require_name' => false, 'require_nid' => false, 'require_sender' => false, 'sort_order' => 5, 'status' => 'active', 'created_at' => $timestamp, 'updated_at' => $timestamp],

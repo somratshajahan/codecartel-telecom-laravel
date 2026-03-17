@@ -88,6 +88,16 @@
                                 <span>Expires:</span>
                                 <span>{{ $package->expire->format('d M Y') }}</span>
                             </div>
+                            @if(!is_null($package->offer_ends_at))
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Countdown:</span>
+                                <span id="countdown-{{ $package->id }}"
+                                      class="font-bold text-warning"
+                                      data-countdown="{{ $package->offer_ends_at->timestamp * 1000 }}">
+                                    --
+                                </span>
+                            </div>
+                            @endif
                             <div class="card-actions justify-end mt-4">
                                 <a href="{{ route('user.drive.buy', ['operator' => $operator, 'package' => $package->id]) }}" class="btn btn-primary btn-sm">Buy</a>
                             </div>
@@ -165,6 +175,52 @@
             </ul>
         </div>
     </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const countdownElements = document.querySelectorAll('[data-countdown]');
+
+            const formatRemaining = (distance) => {
+                const totalSeconds = Math.floor(distance / 1000);
+                const days = Math.floor(totalSeconds / 86400);
+                const hours = Math.floor((totalSeconds % 86400) / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const seconds = totalSeconds % 60;
+
+                if (days > 0) {
+                    return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+                }
+
+                return `${hours}h ${minutes}m ${seconds}s`;
+            };
+
+            const tick = () => {
+                const now = Date.now();
+
+                countdownElements.forEach((element) => {
+                    const endTime = parseInt(element.dataset.countdown, 10);
+
+                    if (Number.isNaN(endTime)) {
+                        return;
+                    }
+
+                    const distance = endTime - now;
+
+                    if (distance <= 0) {
+                        element.textContent = 'Expired';
+                        element.classList.remove('text-warning');
+                        element.classList.add('text-error');
+                        return;
+                    }
+
+                    element.textContent = formatRemaining(distance);
+                });
+            };
+
+            tick();
+            setInterval(tick, 1000);
+        });
+    </script>
 </body>
 
 </html>

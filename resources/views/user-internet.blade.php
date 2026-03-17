@@ -72,6 +72,19 @@
                         $operatorDisplayColor = $operatorColor ?: '#0078C8';
                         $operatorCode = data_get($operator, 'code', strtoupper(substr((string) $operatorName, 0, 2)));
                         $operatorLogo = data_get($operator, 'logo_image_url') ?? data_get($operator, 'logo');
+                        $operatorCountKeys = [
+                        strtolower(trim((string) $operatorName)),
+                        strtolower(trim((string) $operatorRouteName)),
+                        strtolower(preg_replace('/[^a-z0-9]+/', '', (string) $operatorName)),
+                        strtolower(preg_replace('/[^a-z0-9]+/', '', (string) $operatorRouteName)),
+                        ];
+                        $activeOfferCount = 0;
+                        foreach ($operatorCountKeys as $operatorCountKey) {
+                        if ($operatorCountKey !== '' && isset($internetActiveOfferCounts[$operatorCountKey])) {
+                        $activeOfferCount = (int) $internetActiveOfferCounts[$operatorCountKey];
+                        break;
+                        }
+                        }
                         if ($operatorLogo && !\Illuminate\Support\Str::startsWith($operatorLogo, ['http://', 'https://', '//', 'data:'])) {
                         $operatorLogo = asset($operatorLogo);
                         }
@@ -89,6 +102,7 @@
                                 </div>
                                 <h3 class="font-bold text-slate-800">{{ $operatorName }}</h3>
                                 <p class="text-xs text-base-content/60">Internet Pack</p>
+                                <span class="badge badge-success badge-sm mt-1">{{ $activeOfferCount }} active offer</span>
                             </div>
                         </a>
                         @endforeach

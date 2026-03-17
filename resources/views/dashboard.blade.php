@@ -62,7 +62,7 @@
                             </svg>
                             <span class="font-bold" id="navBalance">৳ {{ number_format($user->main_bal ?? 0, 2) }}</span>
                         </div>
-                        <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
+                        <ul tabindex="0" class="mt-3 z-1 p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
                             <li class="menu-title">Balance Details</li>
                             <li><a>Main: ৳ {{ number_format($user->main_bal ?? 0, 2) }}</a></li>
                             <li><a>Drive: ৳ {{ number_format($user->drive_bal ?? 0, 2) }}</a></li>
@@ -79,7 +79,7 @@
                                 @endif
                             </div>
                         </div>
-                        <ul tabindex="0" class="mt-3 z-[1] p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
+                        <ul tabindex="0" class="mt-3 z-1 p-2 shadow menu menu-sm dropdown-content bg-base-100 rounded-box w-52">
                             @if($canProfile)
                             <li><a href="{{ route('user.profile') }}">Profile</a></li>
                             <li><a href="{{ route('user.profile.google-otp') }}">Google OTP</a></li>
@@ -423,7 +423,7 @@
                     <div class="card-body space-y-6">
                         <div>
                             <h2 class="card-title text-2xl">Simple Provider API Documentation</h2>
-                            <p class="text-sm text-base-content/70">Client panel integration-er jonno quick copy-paste sample format.</p>
+                            
                         </div>
 
                         @include('partials.provider-api-docs-content', ['apiDocs' => $apiDocs])
@@ -544,6 +544,14 @@
                             <li><a href="#">Card History</a></li>
                         </ul>
                     </details>
+                </li>
+                <li>
+                    <a href="{{ route('balance.transfer.index') }}">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                        </svg>
+                        Balance Transfer
+                    </a>
                 </li>
                 <li>
                     <details>

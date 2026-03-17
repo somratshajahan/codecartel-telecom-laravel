@@ -107,6 +107,67 @@ function initializePasswordToggles() {
     });
 }
 
+function maskBalanceValue(balanceText) {
+    if (!balanceText) {
+        return balanceText;
+    }
+
+    return balanceText.replace(/(৳\s*)([\d,.]+)/g, '$1*****');
+}
+
+function initializeBalanceMasking() {
+    const balanceDropdowns = Array.from(document.querySelectorAll('.navbar .dropdown'));
+
+    balanceDropdowns.forEach(dropdown => {
+        const balanceElements = Array.from(dropdown.querySelectorAll('span.font-bold, ul.menu a'))
+            .filter(element => /৳\s*[\d,.]+/.test(element.textContent || ''));
+
+        if (!balanceElements.length) {
+            return;
+        }
+
+        let hideTimer = null;
+
+        const hideAllBalances = () => {
+            balanceElements.forEach(element => {
+                const originalValue = element.dataset.originalBalance || (element.textContent || '').trim();
+                element.dataset.originalBalance = originalValue;
+                element.textContent = maskBalanceValue(originalValue);
+            });
+        };
+
+        const showAllBalancesTemporarily = () => {
+            balanceElements.forEach(element => {
+                const originalValue = element.dataset.originalBalance || (element.textContent || '').trim();
+                element.dataset.originalBalance = originalValue;
+                element.textContent = originalValue;
+            });
+
+            if (hideTimer) {
+                window.clearTimeout(hideTimer);
+            }
+
+            hideTimer = window.setTimeout(() => {
+                hideAllBalances();
+            }, 5000);
+        };
+
+        hideAllBalances();
+
+        const trigger = dropdown.querySelector('.btn.btn-ghost');
+        if (trigger) {
+            trigger.style.cursor = 'pointer';
+            trigger.title = 'Tap to show balance for 5 seconds';
+            trigger.addEventListener('click', showAllBalancesTemporarily);
+        }
+
+        balanceElements.forEach(element => {
+            element.style.cursor = 'pointer';
+            element.addEventListener('click', showAllBalancesTemporarily);
+        });
+    });
+}
+
 applyTheme(preferredTheme());
 
 function loadExternalScript(src) {
@@ -238,6 +299,7 @@ async function initializeFirebasePush() {
 document.addEventListener('DOMContentLoaded', () => {
     initializeThemeToggle();
     initializePasswordToggles();
+    initializeBalanceMasking();
 
     document.querySelectorAll('a').forEach(link => {
         link.addEventListener('click', () => {

@@ -104,6 +104,11 @@
                                     <input type="date" name="expire" class="input input-bordered w-full" required />
                                 </div>
                                 <div>
+                                    <label class="label"><span class="label-text font-semibold">Countdown (Minutes)</span></label>
+                                    <input type="number" name="countdown_minutes" min="1" max="43200" placeholder="e.g. 60" class="input input-bordered w-full" />
+                                    <label class="label"><span class="label-text-alt text-base-content/60">Optional. দিলে offer auto বন্ধ হবে।</span></label>
+                                </div>
+                                <div>
                                     <label class="label"><span class="label-text font-semibold">Status</span></label>
                                     <select name="status" class="select select-bordered w-full">
                                         <option value="active" selected>Active</option>
@@ -135,6 +140,7 @@
                                         <th>Commission</th>
                                         <th>Selling Price</th>
                                         <th>Expire</th>
+                                        <th>Countdown</th>
                                         <th>Status</th>
                                         <th>Action</th>
                                     </tr>
@@ -150,6 +156,22 @@
                                         <td>৳{{ $package->commission }}</td>
                                         <td>৳{{ $package->price - $package->commission }}</td>
                                         <td>{{ $package->expire->format('Y-m-d') }}</td>
+                                        <td>
+                                            @if(!is_null($package->offer_ends_at))
+                                            <div class="flex flex-col gap-1">
+                                                <span class="badge badge-info">{{ $package->countdown_minutes }} min</span>
+                                                <span id="admin-countdown-{{ $package->id }}"
+                                                      class="text-xs font-semibold text-warning"
+                                                      data-countdown="{{ $package->offer_ends_at->timestamp * 1000 }}">
+                                                    --
+                                                </span>
+                                            </div>
+                                            @elseif(!is_null($package->countdown_minutes))
+                                            <span class="badge badge-info">{{ $package->countdown_minutes }} min</span>
+                                            @else
+                                            <span class="text-base-content/50">—</span>
+                                            @endif
+                                        </td>
                                         <td><span class="badge {{ $package->status == 'active' ? 'badge-success' : 'badge-error' }}">{{ ucfirst($package->status) }}</span></td>
                                         <td>
                                             <a href="{{ route('admin.manage.drive.package.edit', ['operator' => $package->operator, 'id' => $package->id]) }}" class="btn btn-sm btn-warning">Edit</a>
@@ -157,7 +179,7 @@
                                     </tr>
                                     @empty
                                     <tr>
-                                        <td colspan="10" class="text-center">No packages found</td>
+                                        <td colspan="11" class="text-center">No packages found</td>
                                     </tr>
                                     @endforelse
                                 </tbody>
@@ -504,6 +526,48 @@
                         }
                     });
                 }
+
+                const countdownElements = document.querySelectorAll('[data-countdown]');
+
+                const formatRemaining = (distance) => {
+                    const totalSeconds = Math.floor(distance / 1000);
+                    const days = Math.floor(totalSeconds / 86400);
+                    const hours = Math.floor((totalSeconds % 86400) / 3600);
+                    const minutes = Math.floor((totalSeconds % 3600) / 60);
+                    const seconds = totalSeconds % 60;
+
+                    if (days > 0) {
+                        return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+                    }
+
+                    return `${hours}h ${minutes}m ${seconds}s`;
+                };
+
+                const tickCountdown = () => {
+                    const now = Date.now();
+
+                    countdownElements.forEach((element) => {
+                        const endTime = parseInt(element.dataset.countdown, 10);
+
+                        if (Number.isNaN(endTime)) {
+                            return;
+                        }
+
+                        const distance = endTime - now;
+
+                        if (distance <= 0) {
+                            element.textContent = 'Expired';
+                            element.classList.remove('text-warning');
+                            element.classList.add('text-error');
+                            return;
+                        }
+
+                        element.textContent = formatRemaining(distance);
+                    });
+                };
+
+                tickCountdown();
+                setInterval(tickCountdown, 1000);
             });
         </script>
 </body>
